@@ -1,0 +1,176 @@
+\documentclass[12pt]{article}
+\usepackage[spanish]{babel}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{setspace}
+\usepackage{float}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\onehalfspacing
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\thepage}
+\lhead{Jugador Virtual de Hex}
+
+\title{Jugador Virtual de Hex: Implementación de MCTS y MinMax con Heurísticas}
+\author{Sebastian González Alfonso}
+\date{C312}
+
+\begin{document}
+
+\begin{titlepage}
+\centering
+\vspace*{\fill}
+
+{\LARGE MATCOM, UH \\
+Asignatura: Inteligencia Artificial \\}
+
+\vspace{2cm}
+
+{\Huge Jugador Virtual de Hex: \\ Implementación de MCTS y MinMax con Heurísticas}
+
+\vspace{1.5cm}
+
+{\large Sebastian González Alfonso \\
+		\href{sebagonz106@gmail.com}{sebagonz106@gmail.com} \\
+C312}
+
+\vspace{2cm}
+
+{\large \today}
+
+\vspace*{\fill}
+\end{titlepage}
+
+\begin{abstract}
+
+	El juego Hex es un juego de mesa estratégico combinatorio de dos jugadores que se disputa en un tablero con celdas hexagonales. A pesar de su aparente simplicidad en las reglas, el juego presenta un espacio de búsqueda de complejidad computacional significativa que lo convierte en un banco de pruebas interesante para algoritmos de búsqueda y toma de decisiones en inteligencia artificial. Este trabajo presenta la implementación de un jugador virtual competitivo que integra dos estrategias complementarias: la búsqueda mediante árboles de Monte Carlo (MCTS), adecuada para tableros de gran dimensión, y el algoritmo Minimax con poda alfa-beta, apropiado para espacios de búsqueda reducidos. Adicionalmente, se incorporan mejoras algorítmicas incluyendo evaluación rápida de acciones (RAVE), estrategias progresivas y heurísticas especializadas basadas en patrones de conectividad específicos del juego Hex como puentes y estructuras densas.
+
+	\textbf{Palabras clave:}  \textit{Hex, Monte Carlo Tree Search, Minimax, juegos combinatorios, inteligencia artificial}
+\end{abstract}
+
+\selectlanguage{english}
+\begin{abstract}
+	\noindent
+	Hex is a two-player strategic combinatorial board game played on a board with hexagonal cells. Despite its apparent simplicity in rules, the game presents a search space with significant computational complexity that makes it an interesting testbed for search algorithms and decision-making in artificial intelligence. This work presents the implementation of a competitive virtual player that integrates two complementary strategies: search using Monte Carlo Tree Search (MCTS), suitable for large-scale boards, and the Minimax algorithm with alpha-beta pruning, appropriate for reduced search spaces. Additionally, algorithmic improvements are incorporated including rapid action value estimation (RAVE), progressive strategies, and specialized heuristics based on connectivity patterns specific to the Hex game such as bridges and dense structures.
+	
+	\textbf{Keywords:} \textit{Hex, Monte Carlo Tree Search, Minimax, combinatorial games, artificial intelligence}
+\end{abstract}
+\selectlanguage{spanish}
+
+\newpage
+\tableofcontents
+\newpage
+
+\section{Introducción}
+
+El problema de diseñar agentes inteligentes capaces de tomar decisiones óptimas en entornos con incertidumbre y complejidad combinatoria ha sido una cuestión central en inteligencia artificial desde sus orígenes. Los juegos de estrategia abstractos, en particular, presentan desafíos computacionales significativos que requieren el desarrollo de algoritmos sofisticados de búsqueda y evaluación. Hex es un representante paradigmático de esta clase de problemas: aunque sus reglas fundamentales son simples de comprender, el factor de ramificación elevado del árbol de juego y la necesidad de evaluar posiciones profundas hacen que la búsqueda exhaustiva sea computacionalmente prohibitiva incluso en tableros de tamaño moderado.
+
+El presente proyecto se propone implementar y optimizar un jugador virtual competitivo para Hex mediante la integración de técnicas comple\-mentarias de búsqueda y evaluación. La estrategia principal se basa en la selección entre dos paradigmas algorítmicos según la dimensión del tablero: Monte Carlo Tree Search (MCTS) para espacios grandes, combinado con heurísticas de dominio específico, y Minimax con poda alfa-beta para espacios reducidos. Se explorará adicionalmente cómo técnicas de mejora tales como RAVE, estrategias progresivas y evaluación de patrones pueden elevar la calidad de decisión bajo restricciones temporales estrictas.
+
+\section{Descripción del Juego Hex}
+
+\subsection{Fundamentales y Reglas del Juego}
+
+Hex es un juego de mesa combinatorio abstracto de información perfecta para dos jugadores, inventado independientemente por Piet Hein en 1942 y posteriormente redescubierto por John Nash. El juego se disputa en un tablero romboidal compuesto por celdas hexagonales dispuestas en un patrón regular. Los tableros estándar son de dimensión $n \times n$, siendo común en competiciones internacionales el uso de tableros de 11 × 11, aunque tableros más pequeños (5 × 5, 7 × 7) se emplean frecuentemente en experimentación algorítmica.
+
+El objetivo del juego es conectar dos bordes opuestos del tablero con piezas del propio color \cite{Hex2000}. Específicamente, el jugador 1 intenta establecer una conexión ininterrumpida desde el borde izquierdo al borde derecho del tablero, mientras que el jugador 2 persigue conectar el borde superior al borde inferior. Los dos jugadores alternan colocando una pieza de su color en una celda vacía del tablero. Una conexión válida consiste en una secuencia de piezas del mismo color tales que cada pieza es adyacente (en la geometría hexagonal estándar) a la siguiente. La primera parte de Hex no posee tiradas de azar, sorpresas ni ocultamiento de información, clasificándola como un juego de información perfecta determinista.
+
+\subsection{Propiedades Matemáticas y Complejidad Computacional}
+
+Hex pertenece a la clase de juegos combinatorios abstractos estudiados extensivamente en teoría de juegos. Una propiedad fundamental del juego es que nunca puede terminar en empate: la topología del tablero hexagonal garantiza que en cualquier configuración final ocupada, exactamente uno de los jugadores habrá completado una conexión entre sus bordes designados \cite{Gale1979}. Esta propiedad, conocida como el ``teorema de estrategia de robo'' (strategy stealing argument), implica que para tableros grandes, el primer jugador posee una estrategia ganadora garantizada, aunque tal estrategia no ha sido computacionalmente determinada para tableros de competición estándar.
+
+La complejidad computacional de Hex crece exponencialmente con el tamaño del tablero. El factor de ramificación medio presente en un árbol de juego hexagonal de dimensión $n$ es aproximadamente $O(n^2)$, haciendo que la búsqueda exhaustiva resulte infactible para tableros de tamaño moderado. Un tablero 5 × 5 contiene 25 celdas y un máximo de 25 jugadas posibles, dando un árbol teórico de complejidad aproximada $25!$ sin aplicar técnicas de poda. Para un tablero 11 × 11 (121 celdas), la complejidad crece a magnitudes donde incluso algoritmos sofisticados con modernos procesadores requieren métodos heurísticos y probabilísticos.
+
+\subsection{Geometría Hexagonal y Representación del Tablero}
+
+El tablero de Hex utiliza la geometría de teselación hexagonal regular. Cada celda posee exactamente seis vecinos directos (a menos que la celda se encuentre en un borde o esquina del tablero). En la implementación computacional, la representación espacial del tablero es crítica para eficiencia algorítmica. La convención más común es el esquema \textit{even-r}, donde las filas pares (fila 0, 2, etc.) tienen un desplazamiento horizontal diferente respecto a filas impares. Esta representación permite calcular los seis vecinos de una celda mediante un conjunto fijo de offsets de coordenadas, lo que acelera significativamente operaciones de búsqueda de caminos y evaluación de conectividad.
+
+\section{Algoritmos de Búsqueda}
+
+\subsection{Monte Carlo Tree Search}
+
+\subsubsection{Contexto Histórico y Motivación}
+
+Monte Carlo Tree Search (MCTS) emerge a mediados de la década del 2000 como paradigma revolucionario para búsqueda en espacios de decisión combinatorios complejos. Los algoritmos tradicionales de juegos, como Minimax con poda alfa-beta, adolecen de dificultades crecientes en juegos con factor de ramificación muy alto, particularmente en Go, donde el factor de ramificación promedio es aproximadamente 250. MCTS dirigió la atención hacia métodos que combinaban muestreo aleatorio con construcción progresiva de un árbol de búsqueda, aprovechando la concentración de la distribución de probabilidades para explorar eficientemente espacios amplios \cite{Kocsis2006}.
+
+Los trabajos seminales de Kocsis y Szepesvári (2006) sobre el algoritmo UCT (Upper Confidence bounds applied to Trees) demostraron teóricamente que era posible lograr convergencia asintótica a estrategias óptimas mediante la integración de técnicas de multi-armed bandits en la expansión de árboles de búsqueda. Esto abrió una línea de investigación prolífica que ha generado mejoras significativas en diversas variantes de MCTS aplicadas a juegos complejos y problemas de optimización combinatoria.
+
+\subsubsection{Principios Fundamentales}
+
+MCTS opera mediante iteración repetida de cuatro fases bien definidas:
+
+La fase de \textbf{selección} comienza en la raíz del árbol y descend mediante la aplicación de una política de selección (típicamente la fórmula UCT) hasta alcanzar un nodo no completamente explorado. La fórmula UCT balancea exploración mediante el término de confianza superior y explotación mediante estimaciones de valor acumuladas.
+
+En la fase de \textbf{expansión}, se agrega un nuevo nodo hijo al árbol, corresponde a un movimiento no previamente explorado desde la posición alcanzada en la fase anterior.
+
+Durante la fase de \textbf{simulación}, desde el nodo recientemente expandido se ejecuta una política de juego (comúnmente aleatorio puro en variantes básicas) hasta alcanzar una posición terminal del juego. El resultado de esta simulación (victoria, derrota o empate) se registra.
+
+Finalmente, en la fase de \textbf{retropropagación} (backpropagation), el resultado de la simulación se propaga hacia atrás a través del camino desde el nodo expandido hasta la raíz, actualizando estadísticas de visitas y recompensas acumuladas en cada nodo del camino.
+
+\subsubsection{Fórmula UCT y Balance Exploración-Explotación}
+
+La selección de nodos hijo durante la descencia del árbol se realiza mediante la fórmula UCT, definida como:
+
+\begin{equation}
+\text{UCT}(v) = \frac{Q(v)}{N(v)} + C \sqrt{\frac{\ln N(p(v))}{N(v)}}
+\end{equation}
+
+donde $Q(v)$ denota el número acumulado de simulaciones ganadoras desde el nodo $v$, $N(v)$ es el número total de visitas al nodo, $N(p(v))$ es el número de visitas al nodo padre, y $C$ es una constante de exploración ajustable (frecuentemente establecida entre 0.05 y 0.20). El primer término propicia explotación de nodos con alto rendimiento histórico, mientras el segundo término proporciona un bonus de exploración decreciente conforme un nodo es visitado más frecuentemente.
+
+\subsection{Minimax con Poda Alfa-Beta}
+
+\subsubsection{Desarrollo Histórico}
+
+El algoritmo Minimax constituye uno de los pilares fundacionales de la inteligencia artificial en juegos, originándose en la teoría de juegos combinatorios. Su formulación moderna se debe a las contribuciones de Von Neumann, Turing y Shannon en los años 1950. La adicional de poda alfa-beta, desarrollada independientemente por varios investigadores a finales de los años 1960, representa un hito computacional al demostrar que podía reducirse significativamente el árbol de búsqueda explorado sin pérdida de optimalidad \cite{Knuth1975}.
+
+\subsubsection{Principios Algoritmo Minimax}
+
+Minimax es un algoritmo de búsqueda exhaustiva que evalúa posiciones mediante construcción recursiva de un árbol de juego hasta una profundidad máxima especificada. El algoritmo asume un jugador \textit{maximizador} que intenta lograr el mayor valor posible, y un jugador \textit{minimizador} que persigue minimizar el valor obtenido por su oponente. En cada nodo del árbol, si la profundidad alcanzada es máxima, se evalúa la posición usando una función heurística de evaluación. De otro modo, el valor del nodo se computa recursivamente como el máximo de los valores de nodos hijos sucesores (en niveles maximizadores) o el mínimo (en niveles minimizadores).
+
+\subsubsection{Poda Alfa-Beta}
+
+La poda alfa-beta optimiza Minimax mediante observación de que en ciertos puntos del árbol de búsqueda pueden descartarse ramas completas sin evaluarlas explícitamente. Se mantienen dos variables globales, alfa (la mejor valoración que puede garantizar el jugador maximizador) y beta (la mejor valoración que puede garantizar el jugador minimizador). Cuando durante la búsqueda se detecta que beta $\leq$ alfa, se produce un \textit{cutoff} y la rama actual se poda, ahorrando evaluaciones innecesarias.
+
+El desempeño de alfa-beta depende crucialmente del orden en que se examinan los movimientos (move ordering). Si los movimientos son evaluados en orden de promesa decreciente (mejores primero), la cantidad de nodos podados es significativamente mayor, produciendo speedups de un factor típico de 10 a 100 respecto a Minimax sin poda.
+
+\section{Mejoras Algorítmicas Propuestas}
+
+En este trabajo se incorporan varias mejoras contemporáneas a los algoritmos base:
+
+Para MCTS, se implementa RAVE (Rapid Action Value Estimation), que proporciona estimaciones tempranas de valor de acciones mediante estadísticas all-moves-as-first acumuladas durante playouts. Se exploran adicionalmente estrategias progresivas que adaptan dinámicamente la anchura de expansión del árbol según avanzan las simulaciones.
+
+Para Minimax, se implementan tablas de transposición con hashing Zobrist para evitar reevaluación de posiciones repetidas, e iterative deepening para garantizar el aprovechamiento óptimo del tiempo computacional disponible.
+
+Ambas estrategias se complementan con heurísticas de dominio específico que detectan patrones de conectividad relevantes en Hex, tales como puentes (dos piezas a distancia 2 que garantizan conectividad) y estructuras densas (ziggurats).
+
+\section{Conclusiones Preliminares}
+
+[Esta sección será completada tras la implementación y experimentación]
+
+\begin{thebibliography}{99}
+
+\bibitem{Kocsis2006}
+Kocsis, L., \& Szepesvári, C. (2006). Bandit based Monte-Carlo Tree Search. En \textit{Proceedings of the 17th European Conference on Machine Learning} (pp. 282--293). Springer.
+
+\bibitem{Knuth1975}
+Knuth, D. W., \& Moore, R. W. (1975). An analysis of alpha-beta pruning. \textit{Artificial Intelligence}, 6(4), 293--326.
+
+\bibitem{Gale1979}
+Gale, D. (1979). The game of Hex and the Brouwer fixed-point theorem. \textit{The American Mathematical Monthly}, 86(10), 818--827.
+
+\bibitem{Hex2000}
+Beck, J. (2008). \textit{The art of proof: Basic training for deeper mathematics}. Springer Science+Business Media.
+
+\bibitem{Russell2020}
+Russell, S. J., \& Norvig, P. (2020). \textit{Artificial intelligence: A modern approach} (4th ed.). Prentice Hall.
+
+\end{thebibliography}
+
+\end{document}
