@@ -25,57 +25,9 @@ Este documento describe el plan de desarrollo para crear un jugador virtual comp
 
 ## Fases de Desarrollo
 
-### FASE 0: Infraestructura Base y Framework de Pruebas
-**Duración estimada:** 2-3 horas  
-**Prioridad:** CRÍTICA (bloqueante)
+### FASE 0: 
 
-#### Objetivos
-- Establecer arquitectura modular para múltiples estrategias de jugadores
-- Crear framework de evaluación para medir desempeño
-- Preparar logging y benchmarking
-- Definir contrato de interfaz para nuevos jugadores
-
-#### Tareas específicas
-
-1. **Refactorización de la estructura del proyecto**
-   - Crear carpeta `players/` para organizar diferentes estrategias
-   - Crear carpeta `evaluation/` para herramientas de prueba
-   - Crear carpeta `utils/` para utilidades compartidas
-   - Crear carpeta `heuristics/` para funciones de evaluación
-
-2. **Mejora de `player.py` - Interfaz base**
-   ```python
-   # Propiedades recomendadas a agregar:
-   - nombre: str (identificador de estrategia)
-   - configuración: dict (parámetros configurables)
-   - estadísticas: dict (tracking de desempeño)
-   - tiempo_máximo: float (restricción temporal)
-   ```
-
-3. **Crear módulo `GameState`** en `utils/game_state.py`
-   - Wrapper alrededor de `HexBoard` con estado adicional
-   - Caché de movimientos legales
-   - Histórico de jugadas para análisis
-   - Métodos de serialización (para nodos en árbol de búsqueda)
-
-4. **Framework de evaluación** en `evaluation/tournament.py`
-   - Función `play_match(player1, player2, board_size, num_games)`: Ejecuta series de partidas
-   - Función `evaluate_player(player, opponent, board_size, num_games)`: Calcula estadísticas (win_rate, avg_move_time, etc)
-   - Logging detallado de partidas (movimientos, tiempos, resultados)
-   - Exportación de resultados
-
-5. **Herramientas de benchmarking** en `utils/timer.py`
-   - Decoradores para medir tiempo de ejecución
-   - Profiler integrado para identificar cuellos de botella
-   - Límite de tiempo por movimiento (constraint para competencia)
-
-6. **Mejoras a `board.py`**
-   - Agregar método `get_empty_cells()` (optimización: cachear)
-   - Agregar método `undo_move(row, col)` para reverso rápido
-   - Agregar método `get_board_hash()` para detección de posiciones repetidas
-   - Validación de entrada robusta
-
-7. **Early-check para victoria inmediata** en `utils/move_checking.py` (Crítica 1 integrada)
+**Early-check para victoria inmediata** en `utils/move_checking.py`
    ```python
    def get_immediate_winning_move(board, player_id):
        """
@@ -108,45 +60,11 @@ Este documento describe el plan de desarrollo para crear un jugador virtual comp
        return get_immediate_winning_move(board, opp_id)
    ```
 
-#### Archivos a crear
-```
-Hex-Virtual-Player/
-├── players/
-│   ├── __init__.py
-│   ├── random_player.py (refactorizar)
-│   ├── mcts_player.py (Fase 1)
-│   └── minimax_player.py (Fase 6)
-├── evaluation/
-│   ├── __init__.py
-│   ├── tournament.py
-│   └── metrics.py
-├── utils/
-│   ├── __init__.py
-│   ├── game_state.py
-│   ├── timer.py
-│   └── constants.py (tamaños de tablero, timeouts, etc)
-├── heuristics/
-│   ├── __init__.py
-│   └── hex_heuristics.py (Fase 5)
-├── board.py (mejorado)
-├── player.py (mejorado)
-└── main.py (script de demostración)
-```
-
-#### Criteria de éxito
-- ✓ Proyecto ejecutable con `tournament.py`
-- ✓ RandomPlayer vs RandomPlayer ejecuta sin errores
-- ✓ Logging detallado disponible
-- ✓ Benchmarking funcional
-
 ---
 
 ### FASE 1: Monte Carlo Tree Search Básico (sin heurísticas)
 **Duración estimada:** 6-8 horas  
 **Prioridad:** ALTA (core functionality)
-
-#### Referencia bibliográfica
-Basado en **"Monte Carlo Tree Search in Hex.pdf"** y **"MCTS applications to Hex"**: Algoritmo UCT (Upper Confidence bounds applied to Trees) - Kocsis & Szepesvári (2006).
 
 #### Objetivos
 - Implementar MCTS con selección UCT
@@ -221,10 +139,6 @@ Basado en **"Monte Carlo Tree Search in Hex.pdf"** y **"MCTS applications to Hex
      - Jugar movimiento
      - Cambiar de jugador
    - Retornar ganador
-   
-   Nota: Esta es la parte más crítica en MCTS básico para
-   exploración sin sesgo. Ver "Monte Carlo Tree Search in Hex.pdf"
-   sobre importancia de playouts uniformes.
    ```
 
 5. **Clase `MCTSPlayer` que hereda de `Player`**
