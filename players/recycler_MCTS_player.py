@@ -16,14 +16,14 @@ from players.utils.early_check import (
 )
 
 
-class _MCTSNode:
+class _MCTSRecyclerNode:
     """Node in the MCTS tree."""
 
     def __init__(
         self,
         board: BoardOptimized,
         player_id: int,
-        parent: Optional[_MCTSNode] = None,
+        parent: Optional[_MCTSRecyclerNode] = None,
         depth: int = 0,
     ):
         """
@@ -68,7 +68,7 @@ class _MCTSNode:
         ) if self.parent else 0
         return exploitation + exploration
 
-    def select_best_child(self, exploration_c: float) -> Optional[_MCTSNode]:
+    def select_best_child(self, exploration_c: float) -> Optional[_MCTSRecyclerNode]:
         """
         Select child with highest UCT value.
         
@@ -83,7 +83,7 @@ class _MCTSNode:
 
         return max(self.children.values(), key=lambda child: child.uct_value(exploration_c))
 
-    def expand(self, move: Tuple[int, int], player_id: int) -> _MCTSNode:
+    def expand(self, move: Tuple[int, int], player_id: int) -> _MCTSRecyclerNode:
         """
         Expand a new child node.
         
@@ -96,7 +96,7 @@ class _MCTSNode:
         """
         new_board = self.board.clone()
         new_board.place_piece(move[0], move[1], self.player_id)
-        child = _MCTSNode(new_board, player_id, parent=self, depth=self.depth + 1)
+        child = _MCTSRecyclerNode(new_board, player_id, parent=self, depth=self.depth + 1)
         self.children[move] = child
         return child
 
@@ -117,31 +117,41 @@ class _MCTSNode:
         return None
 
 
-class BasicMCTSPlayer(Player):
+class RecyclerMCTSPlayer(Player):
     """
-    Monte Carlo Tree Search player for Hex.
+    Monte Carlo Tree Search player for Hex with tree recycling between moves.
     
-    Implements MCTS with UCT selection and random playouts.
+    Implements MCTS with UCT selection, random playouts, and intelligent tree reuse.
+    Between moves, attempts to detect opponent's move and continue searching from
+    the appropriate subtree instead of restarting from scratch.
     """
 
     MAX_DEPTH = 50  # Limit depth to prevent infinite loops in large boards
 
-    def __init__(self, player_id: int, max_time: float = 4.98, exploration_c: float = 0.1):
+    def __init__(self, player_id: int, max_time: float = 4.98, exploration_c: float = 0.2):
         """
-        Initialize MCTS player.
+        Initialize MCTS player with tree recycling capabilities.
         
         Args:
             player_id: Player ID (1 or 2).
             max_time: Maximum time per move in seconds (default 4.999).
-            exploration_c: UCT exploration constant (default 0.1).
+            exploration_c: UCT exploration constant (default 0.2).
         """
         super().__init__(player_id)
         self.max_time = max_time
         self.exploration_c = exploration_c
+        
+        # Tree recycling state
+        self.board: Optional[BoardOptimized] = None
+        self.root: Optional[_MCTSRecyclerNode] = None
+        self.tree_reused_count = 0  # Statistics
 
     def play(self, board: HexBoard) -> Tuple[int, int]:
         """
-        Select best move using MCTS with time control.
+        Select best move using MCTS with tree recycling and time control.
+        
+        Attempts to reuse the search tree from the previous turn by detecting
+        the opponent's move and continuing from the appropriate subtree.
         
         Args:
             board: Current HexBoard state.
@@ -152,41 +162,50 @@ class BasicMCTSPlayer(Player):
         time_start = time.time()
 
         # Convert to optimized board immediately for all subsequent operations
-        opt_board = BoardOptimized(board)
+        new_board = BoardOptimized(board)
+
+        best_move = random.choice(list(new_board.get_empty_positions()))  # Fallback random move
+
+        # Early check: opening move suggestion
+        opening_move = suggest_opening_move(new_board, self.player_id)
+        if opening_move and new_board.board[opening_move[0]][opening_move[1]] == 0:
+            self._reset_info()
+            return opening_move
+
+        # Attempt tree recycling
+        root = self._find_reusable_root(new_board)
+        if root is None:
+            # No recycling possible, create fresh root
+            root = _MCTSRecyclerNode(new_board, self.player_id)
 
         # Early check: immediate winning move
-        win_move = get_immediate_winning_move(opt_board, self.player_id)
+        win_move = get_immediate_winning_move(new_board, self.player_id)
         if win_move:
+            self._reset_info()
             return win_move
 
         # Early check: must block opponent
         opponent_id = 3 - self.player_id
-        block_move = get_opponent_forcing_move(opt_board, opponent_id)
+        block_move = get_opponent_forcing_move(new_board, opponent_id)
         if block_move:
+            self._save_state_for_recycling(new_board, root, block_move)
             return block_move
 
-        # Early check: opening move suggestion
-        opening_move = suggest_opening_move(opt_board, self.player_id)
-        if opening_move and opt_board.board[opening_move[0]][opening_move[1]] == 0:
-            return opening_move
-        
-        best_move = random.choice(list(opt_board.get_empty_positions()))  # Fallback random move
-
         # MCTS search using optimized board
-        # Root node represents current board state with MCTS player as next to move
-        root = _MCTSNode(opt_board, self.player_id)
-
         while time.time() - time_start < self.max_time:
             self._mcts_iteration(root)
 
-        # Select best move by visit count
+        # Select best move
         best_move = self._select_best_move(root)
+
+        # Save state for next turn's recycling
+        self._save_state_for_recycling(new_board, root, best_move)
 
         print(self.player_id, f"- {(time.time() - time_start):.4f}, seconds for MCTS search with exploration_c =", self.exploration_c)
         
         return best_move
 
-    def _mcts_iteration(self, root: _MCTSNode) -> None:
+    def _mcts_iteration(self, root: _MCTSRecyclerNode) -> None:
         """
         Execute one MCTS iteration: Selection -> Expansion -> Simulation -> Backpropagation.
         
@@ -223,7 +242,7 @@ class BasicMCTSPlayer(Player):
                 node.win_count += 1
             node = node.parent
 
-    def _play_random_playout(self, node: _MCTSNode) -> int:
+    def _play_random_playout(self, node: _MCTSRecyclerNode) -> int:
         """
         Play a random game from node until terminal.
         
@@ -251,7 +270,105 @@ class BasicMCTSPlayer(Player):
         # Should not reach here in Hex (no draws) but return opponent if board full
         return 3 - current_player
 
-    def _select_best_move(self, root: _MCTSNode) -> Tuple[int, int]:
+    def _find_board_difference(self, board1: BoardOptimized, board2: BoardOptimized) -> Optional[Tuple[int, int]]:
+        """
+        Find the single move that differs between two boards.
+        
+        Detects what move was made by comparing board states. If there is exactly
+        one difference (empty → piece), returns that move. Otherwise returns None
+        to indicate the boards are incomparable.
+        
+        Args:
+            board1: Previous board state.
+            board2: Current board state.
+            
+        Returns:
+            The move (row, col) that differs, or None if incomparable.
+        """
+        if board1.size != board2.size:
+            return None
+        
+        differences = []
+        for r in range(board1.size):
+            for c in range(board1.size):
+                if board1.board[r][c] != board2.board[r][c]:
+                    # Valid change: empty → piece
+                    if board1.board[r][c] == 0 and board2.board[r][c] != 0:
+                        differences.append((r, c))
+                    else:
+                        # Invalid change (overwrite, undo, etc)
+                        return None
+        
+        # Accept only exactly 1 move
+        if len(differences) == 1:
+            return differences[0]
+        else:
+            return None
+
+    def _find_reusable_root(self, current_board: BoardOptimized) -> Optional[_MCTSRecyclerNode]:
+        """
+        Attempt to find a reusable root node from the previous search tree.
+        
+        Algorithm:
+        1. If no previous state, return None (no recycling)
+        2. Detect opponent's move by comparing boards
+        3. If move found and exists in children, return that child
+        4. Otherwise return None (reset required)
+        
+        Args:
+            current_board: Current board state after opponent's move.
+            
+        Returns:
+            Reusable root node, or None if recycling not possible.
+        """
+        # Check if we have previous state to recycle from
+        if self.board is None or self.root is None:
+            return None
+        
+        # Find opponent's move by comparing boards
+        opp_move = self._find_board_difference(self.board, current_board)
+        
+        if opp_move is None:
+            # Board states are incomparable (multiple changes, invalid moves, etc)
+            return None
+        
+        # Search for this move in the children of last root
+        if opp_move in self.root.children:
+            reused_node = self.root.children[opp_move]
+            self.tree_reused_count += 1
+            print(f"✓ Tree recycled from move {opp_move} with {reused_node.visit_count} visits")
+            return reused_node
+        else:
+            # Move not found in tree (shouldn't happen, but fallback to reset)
+            return None
+
+    def _save_state_for_recycling(self, board: BoardOptimized, root: _MCTSRecyclerNode, best_move: Tuple[int, int]) -> None:
+        """
+        Save the current state for potential recycling in the next turn.
+        
+        Updates the board with the best move and saves both board and root.
+        Next turn will attempt to detect opponent's move relative to this state.
+        
+        Args:
+            board: Current board state (before best_move).
+            root: Current root node after search.
+            best_move: The move selected to play.
+        """
+        # Clone and update board with our move
+        saved_board = board.clone()
+        saved_board.place_piece(best_move[0], best_move[1], self.player_id)
+        
+        # Save for next turn
+        self.board = saved_board
+        self.root = root.children[best_move]
+    
+    def _reset_info(self):
+        """Reset saved state info."""
+        self.board = None
+        self.root = None
+        self.tree_reused_count = 0
+        
+    def _select_best_move(self, root: _MCTSRecyclerNode) -> Tuple[int, int]:
         """
         Select best move from root by highest visit count.
         
