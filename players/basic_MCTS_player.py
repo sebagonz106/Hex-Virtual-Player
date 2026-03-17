@@ -62,7 +62,7 @@ class _MCTSNode:
         if self.visit_count == 0:
             return float('inf')
 
-        exploitation = self.win_count / self.visit_count
+        exploitation = 1 - self.win_count / self.visit_count
         exploration = exploration_c * math.sqrt(
             math.log(self.parent.visit_count) / self.visit_count
         ) if self.parent else 0
@@ -124,13 +124,15 @@ class BasicMCTSPlayer(Player):
     Implements MCTS with UCT selection and random playouts.
     """
 
-    def __init__(self, player_id: int, max_time: float = 4.75, exploration_c: float = 0.1):
+    MAX_DEPTH = 50  # Limit depth to prevent infinite loops in large boards
+
+    def __init__(self, player_id: int, max_time: float = 4.999, exploration_c: float = 0.1):
         """
         Initialize MCTS player.
         
         Args:
             player_id: Player ID (1 or 2).
-            max_time: Maximum time per move in seconds (default 5.0).
+            max_time: Maximum time per move in seconds (default 4.999).
             exploration_c: UCT exploration constant (default 0.1).
         """
         super().__init__(player_id)
@@ -171,13 +173,17 @@ class BasicMCTSPlayer(Player):
         best_move = random.choice(list(opt_board.get_empty_positions()))  # Fallback random move
 
         # MCTS search using optimized board
-        root = _MCTSNode(opt_board, opponent_id)
+        # Root node represents current board state with MCTS player as next to move
+        root = _MCTSNode(opt_board, self.player_id)
 
-        while  time.time() - time_start < self.max_time:
+        while time.time() - time_start < self.max_time:
             self._mcts_iteration(root)
 
         # Select best move by visit count
         best_move = self._select_best_move(root)
+
+        print(time.time() - time_start, "seconds for MCTS search with exploration_c =", self.exploration_c)
+        
         return best_move
 
     def _mcts_iteration(self, root: _MCTSNode) -> None:
@@ -189,9 +195,8 @@ class BasicMCTSPlayer(Player):
         """
         # Selection + Expansion
         node = root
-        max_depth = int(math.pow(root.board.size, 3/2)) # Limit depth to prevent infinite loops in large boards
 
-        while not node.is_terminal() and node.depth < max_depth:
+        while not node.is_terminal() and node.depth <  self.MAX_DEPTH:
             if node.untried_moves:
                 # Expansion: try a random untried move
                 move = node.untried_moves.pop()
@@ -261,8 +266,14 @@ class BasicMCTSPlayer(Player):
             empty = list(root.board.get_empty_positions())
             return random.choice(empty) if empty else (0, 0)
 
-        best_child = max(root.children.values(), key=lambda child: child.visit_count)
+        total_sims = sum(child.visit_count for child in root.children.values())
+
+        best_child = max(root.children.values(), key=lambda child: 1 - child.win_count/child.visit_count + child.visit_count/total_sims)
+
+        # best_child = max(root.children.values(), key=lambda child: child.visit_count)
         
+        print(f"Best move has {best_child.visit_count} visits and win rate {1 - best_child.win_count/best_child.visit_count:.2f} after {total_sims} simulations")
+
         # Find move that led to this child
         for move, child in root.children.items():
             if child is best_child:
