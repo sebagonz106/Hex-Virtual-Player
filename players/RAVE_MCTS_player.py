@@ -16,18 +16,18 @@ from players.utils.early_check import (
 )
 
 
-class _MCTSRecyclerNode:
-    """Node in the MCTS tree."""
+class _RAVEMCTSNode:
+    """Node in the MCTS tree with RAVE/AMAF statistics."""
 
     def __init__(
         self,
         board: BoardOptimized,
         player_id: int,
-        parent: Optional[_MCTSRecyclerNode] = None,
+        parent: Optional[_RAVEMCTSNode] = None,
         depth: int = 0,
     ):
         """
-        Initialize MCTS node.
+        Initialize MCTS node with RAVE statistics.
         
         Args:
             board: Optimized board state.
@@ -37,14 +37,25 @@ class _MCTSRecyclerNode:
         """
         self.board = board
         self.player_id = player_id
-        self.parent = parent
+        self.parent: Optional[_RAVEMCTSNode] = parent
         self.depth = depth
         self.children = {}
+        
+        # UCT statistics
         self.visit_count = 0
         self.win_count = 0
+        
+        # RAVE/AMAF statistics (All-Moves-As-First)
+        # Maps move -> (visit_count, win_count)
+        self.amaf_visits = {}  # {move: count}
+        self.amaf_wins = {}    # {move: count}
+        
+        # Reverse mapping for O(1) lookup: child node -> move
+        # Used in select_best_child_with_rave to avoid O(n) loop
+        self.reverse_children = {}  # {id(child): move}
+        
         self.untried_moves = list(board.get_empty_positions())
         random.shuffle(self.untried_moves)
-        self.depth = depth
 
 
     def uct_value(self, exploration_c: float) -> float:
@@ -68,22 +79,66 @@ class _MCTSRecyclerNode:
         ) if self.parent else 0
         return exploitation + exploration
 
-    def select_best_child(self, exploration_c: float) -> Optional[_MCTSRecyclerNode]:
+    def select_best_child_with_rave(self, exploration_c: float, rave_bias: float = 0.00025) -> Optional[_RAVEMCTSNode]:
         """
-        Select child with highest UCT value.
+        Select child using UCT+RAVE combined value.
+        
+        Implements the formula from Cazenave & Saffidine (2009) Monte-Carlo Hex:
+        V_combined = (1 - coef) * UCT_value + coef * AMAF_value
+        
+        Where:
+        coef = rc / (rc + c + rc * c * bias)
+        
+        And:
+        - rc: amaf_visits (number of simulations where move was played)
+        - rw: amaf_wins (number of wins with this move)
+        - c: visit_count (simulations at this node)
+        - bias: 0.00025 (empirically optimal from Table 4, Cazenave 2009)
+        
+        OPTIMIZATION: Uses reverse_children mapping for O(1) move lookup,
+        avoiding O(n) loop in every UCT evaluation.
         
         Args:
-            exploration_c: Exploration constant.
+            exploration_c: Exploration constant for UCT.
+            rave_bias: Bias for decay function (default 0.00025).
             
         Returns:
-            Best child or None.
+            Best child by RAVE-combined value, or None if no children.
         """
         if not self.children:
             return None
+        
+        def combined_value(child):
+            # UCT value (traditional component)
+            uct_val = child.uct_value(exploration_c)
+            
+            # Get move leading to this child using reverse mapping (O(1))
+            move_to_child = self.reverse_children.get(id(child))
+            
+            if move_to_child is None or move_to_child not in self.amaf_visits:
+                # No AMAF data yet, return pure UCT
+                return uct_val
+            
+            # Calculate AMAF win rate
+            amaf_visits_count = self.amaf_visits[move_to_child]
+            if amaf_visits_count == 0:
+                return uct_val
+            
+            amaf_win_rate = 1 - self.amaf_wins[move_to_child] / amaf_visits_count
+            
+            # coef = rc / (rc + c + rc ∗ c ∗ bias) decays with visit count
+            rc = amaf_visits_count
+            c = self.visit_count
+            coef = rc / (rc + c + rc * c * rave_bias)
+            
+            # Combine UCT and RAVE
+            combined_val = (1.0 - coef) * uct_val + coef * amaf_win_rate
+            
+            return combined_val
+        
+        return max(self.children.values(), key=combined_value)
 
-        return max(self.children.values(), key=lambda child: child.uct_value(exploration_c))
-
-    def expand(self, move: Tuple[int, int], player_id: int) -> _MCTSRecyclerNode:
+    def expand(self, move: Tuple[int, int], player_id: int) -> _RAVEMCTSNode:
         """
         Expand a new child node.
         
@@ -96,8 +151,9 @@ class _MCTSRecyclerNode:
         """
         new_board = self.board.clone()
         new_board.place_piece(move[0], move[1], self.player_id)
-        child = _MCTSRecyclerNode(new_board, player_id, parent=self, depth=self.depth + 1)
+        child = _RAVEMCTSNode(new_board, player_id, parent=self, depth=self.depth + 1)
         self.children[move] = child
+        self.reverse_children[id(child)] = move  # O(1) reverse lookup
         return child
 
     def is_terminal(self) -> bool:
@@ -117,34 +173,52 @@ class _MCTSRecyclerNode:
         return None
 
 
-class RecyclerMCTSPlayer(Player):
+class RAVEMCTSPlayer(Player):
     """
-    Monte Carlo Tree Search player for Hex with tree recycling between moves.
+    Monte Carlo Tree Search player for Hex with RAVE/AMAF and tree recycling.
     
-    Implements MCTS with UCT selection, random playouts, and intelligent tree reuse.
-    Between moves, attempts to detect opponent's move and continue searching from
-    the appropriate subtree instead of restarting from scratch.
+    Implements MCTS with three major enhancements:
+    
+    1. **UCT Selection (Phase 1):** Upper Confidence bounds for Trees selection
+       enables exploration-exploitation balance during tree descent.
+    
+    2. **Tree Recycling (Phase 2):** Between moves, detects opponent's move
+       via board comparison and reuses the search tree, improving efficiency.
+    
+    3. **RAVE Enhancement (Phase 3):** All-Moves-As-First statistics track
+       value estimates for moves regardless of their position in the tree.
+       Combines UCT and RAVE for faster convergence during early iterations.
+    
+    Scientific References:
+    - Cazenave & Saffidine (2009): Implementation in YOPT Hex player
     """
 
     MAX_DEPTH = 50  # Limit depth to prevent infinite loops in large boards
+    ALPHA = 0.7  # visit count importance factor for final move selection
 
-    def __init__(self, player_id: int, max_time: float = 4.98, exploration_c: float = 0.2):
+    def __init__(self, player_id: int, max_time: float = 4.98, exploration_c: float = 0.5, rave_bias: float = 0.00025):
         """
-        Initialize MCTS player with tree recycling capabilities.
+        Initialize RAVE-MCTS player with tree recycling capabilities.
         
         Args:
             player_id: Player ID (1 or 2).
-            max_time: Maximum time per move in seconds (default 4.999).
-            exploration_c: UCT exploration constant (default 0.2).
+            max_time: Maximum time per move in seconds (default 4.98).
+            exploration_c: UCT exploration constant (default 0.5).
+                           Controls exploration vs exploitation balance.
+                           Higher -> more exploration, lower -> more exploitation.
+            rave_bias: Bias for RAVE decay function (default 0.00025).
+                       Higher values -> faster transition to UCT only.
+                       Lower values -> longer phase of UCT+RAVE combination.
         """
         super().__init__(player_id)
         self.max_time = max_time
         self.exploration_c = exploration_c
+        self.rave_bias = rave_bias
         
         # Tree recycling state
         self.board: Optional[BoardOptimized] = None
-        self.root: Optional[_MCTSRecyclerNode] = None
-        self.tree_reused_count = 0  # Statistics
+        self.root: Optional[_RAVEMCTSNode] = None
+        self.tree_reused_count = 0  # Statistics: tracks successful tree reuses
 
     def play(self, board: HexBoard) -> Tuple[int, int]:
         """
@@ -176,7 +250,7 @@ class RecyclerMCTSPlayer(Player):
         root = self._find_reusable_root(new_board)
         if root is None:
             # No recycling possible, create fresh root
-            root = _MCTSRecyclerNode(new_board, self.player_id)
+            root = _RAVEMCTSNode(new_board, self.player_id)
 
         # Early check: immediate winning move
         win_move = get_immediate_winning_move(new_board, self.player_id)
@@ -202,13 +276,19 @@ class RecyclerMCTSPlayer(Player):
         self._save_state_for_recycling(new_board, root, best_move)
 
         elapsed = time.time() - time_start
-        print(f"[Player {self.player_id}] Recycler-MCTS move in {elapsed:.4f}s | exploration_c={self.exploration_c:.2f} | tree_reused={self.tree_reused_count} times")
+        print(f"[Player {self.player_id}] RAVE-MCTS move in {elapsed:.4f}s | exploration_c={self.exploration_c} | rave_bias = {self.rave_bias} | tree_reused={self.tree_reused_count} times")
         
         return best_move
 
-    def _mcts_iteration(self, root: _MCTSRecyclerNode) -> None:
+    def _mcts_iteration(self, root: _RAVEMCTSNode) -> None:
         """
-        Execute one MCTS iteration: Selection -> Expansion -> Simulation -> Backpropagation.
+        Execute one MCTS iteration with RAVE/AMAF support.
+        
+        Phases:
+        1. Selection: descend using UCT+RAVE
+        2. Expansion: add a new node with untried move
+        3. Simulation: random playout with AMAF tracking
+        4. Backpropagation: update UCT path and AMAF statistics
         
         Args:
             root: Root node of MCTS tree.
@@ -216,7 +296,7 @@ class RecyclerMCTSPlayer(Player):
         # Selection + Expansion
         node = root
 
-        while not node.is_terminal() and node.depth <  self.MAX_DEPTH:
+        while not node.is_terminal() and node.depth < self.MAX_DEPTH:
             if node.untried_moves:
                 # Expansion: try a random untried move
                 move = node.untried_moves.pop()
@@ -224,52 +304,81 @@ class RecyclerMCTSPlayer(Player):
                 node = node.expand(move, next_player_id)
                 break
             else:
-                # Selection: use UCT to select best child
-                child = node.select_best_child(self.exploration_c)
+                # Selection: use UCT+RAVE to select best child
+                child = node.select_best_child_with_rave(self.exploration_c, self.rave_bias)
                 if child is None:
                     break
                 node = child
 
-        # Simulation: random playout from node
+        # Simulation: random playout from node WITH AMAF tracking
         if node.is_terminal():
             result = node.get_winner()
+            amaf_sequence = []
         else:
-            result = self._play_random_playout(node)
+            result, amaf_sequence = self._play_random_playout_with_amaf(node)
 
-        # Backpropagation: update all nodes in path
-        while node is not None:
-            node.visit_count += 1
-            if result == node.player_id:
-                node.win_count += 1
-            node = node.parent
+        # Backpropagation: update UCT path AND AMAF statistics
+        current = node
+        while current is not None:
+            # Traditional UCT update
+            current.visit_count += 1
+            if result == current.player_id:
+                current.win_count += 1
+            
+            # RAVE/AMAF update: all moves in playout get updated
+            if current.parent is not None and amaf_sequence:
+                for move in amaf_sequence:
+                    if move not in current.amaf_visits:
+                        current.amaf_visits[move] = 0
+                        current.amaf_wins[move] = 0
+                    
+                    current.amaf_visits[move] += 1
+                    if result == current.player_id:
+                        current.amaf_wins[move] += 1
+            
+            current = current.parent
 
-    def _play_random_playout(self, node: _MCTSRecyclerNode) -> int:
+    def _play_random_playout_with_amaf(self, node: _RAVEMCTSNode) -> Tuple[int, list]:
         """
-        Play a random game from node until terminal.
+        Play a random playout from node, tracking All-Moves-As-First (AMAF).
+        
+        This function differs from _play_random_playout in that it returns
+        both the winner AND the sequence of moves played. This sequence is used
+        to update AMAF statistics at each node in the tree.
+        
+        Scientific basis: Gelly & Silver (2011) "Monte-Carlo Tree Search in Hex"
+        - AMAF (All-Moves-As-First) provides rapid action value estimation
+        - Each move in the playout is tracked, regardless of where it was played
+        - Improves convergence speed by providing early value estimates
         
         Args:
-            node: Starting node.
+            node: Starting node for playout.
             
         Returns:
-            Winner (1 or 2).
+            Tuple of (winner, moves_sequence) where:
+            - winner: Player ID (1 or 2)
+            - moves_sequence: List of moves [(r1,c1), (r2,c2), ...] as tuples
         """
         board = node.board.clone()
         current_player = node.player_id
+        moves_played = []
 
         # Play until board is full or someone wins
         empty_positions = list(board.get_empty_positions())
         random.shuffle(empty_positions)
 
         for r, c in empty_positions:
+            move = (r, c)
             board.place_piece(r, c, current_player)
+            moves_played.append(move)  # TRACKING: record move for AMAF
 
             if board.check_connection(current_player):
-                return current_player
+                return current_player, moves_played
 
             current_player = 3 - current_player
 
-        # Should not reach here in Hex (no draws) but return opponent if board full
-        return 3 - current_player
+        # Board is full with no winner (shouldn't happen in Hex)
+        return 3 - current_player, moves_played
 
     def _find_board_difference(self, board1: BoardOptimized, board2: BoardOptimized) -> Optional[Tuple[int, int]]:
         """
@@ -306,7 +415,7 @@ class RecyclerMCTSPlayer(Player):
         else:
             return None
 
-    def _find_reusable_root(self, current_board: BoardOptimized) -> Optional[_MCTSRecyclerNode]:
+    def _find_reusable_root(self, current_board: BoardOptimized) -> Optional[_RAVEMCTSNode]:
         """
         Attempt to find a reusable root node from the previous search tree.
         
@@ -343,7 +452,7 @@ class RecyclerMCTSPlayer(Player):
             # Move not found in tree (shouldn't happen, but fallback to reset)
             return None
 
-    def _save_state_for_recycling(self, board: BoardOptimized, root: _MCTSRecyclerNode, best_move: Tuple[int, int]) -> None:
+    def _save_state_for_recycling(self, board: BoardOptimized, root: _RAVEMCTSNode, best_move: Tuple[int, int]) -> None:
         """
         Save the current state for potential recycling in the next turn.
         
@@ -358,7 +467,7 @@ class RecyclerMCTSPlayer(Player):
         # Clone and update board with our move
         saved_board = board.clone()
         saved_board.place_piece(best_move[0], best_move[1], self.player_id)
-        
+
         # Save for next turn
         try:
             self.board = saved_board
@@ -375,9 +484,10 @@ class RecyclerMCTSPlayer(Player):
         self.root = None
         self.tree_reused_count = 0
         
-    def _select_best_move(self, root: _MCTSRecyclerNode) -> Tuple[int, int]:
+    def _select_best_move(self, root: _RAVEMCTSNode) -> Tuple[int, int]:
         """
-        Select best move from root by highest visit count.
+        Select best move from root by a heuristic approach that values both
+        visit count and win rate.
         
         Args:
             root: Root node.
@@ -392,11 +502,14 @@ class RecyclerMCTSPlayer(Player):
 
         total_sims = sum(child.visit_count for child in root.children.values())
 
-        best_child = max(root.children.values(), key=lambda child: 1 - child.win_count/child.visit_count + child.visit_count/total_sims)
+        best_child = max(root.children.values(), key=lambda child: (1 - self.ALPHA) * (1 - child.win_count / child.visit_count) + self.ALPHA * child.visit_count / total_sims)
 
         # best_child = max(root.children.values(), key=lambda child: child.visit_count)
         
-        print(f"[Player {self.player_id}] Best move has {best_child.visit_count} visits and win rate {1 - best_child.win_count/best_child.visit_count:.2f} after {total_sims} simulations")
+        # Safely calculate win rate (avoid division by zero)
+        win_rate = (1 - best_child.win_count / best_child.visit_count) if best_child.visit_count > 0 else 0.0
+        
+        print(f"[Player {self.player_id}] Best move has {best_child.visit_count} visits and win rate {win_rate:.2f} after {total_sims} simulations")
 
         # Find move that led to this child
         for move, child in root.children.items():

@@ -8,6 +8,7 @@ from players.player import Player
 from players.random_player import RandomPlayer
 from players.basic_MCTS_player import BasicMCTSPlayer
 from players.recycler_MCTS_player import RecyclerMCTSPlayer
+from players.RAVE_MCTS_player import RAVEMCTSPlayer
 from typing import Optional, Type
 
 
@@ -16,6 +17,7 @@ AVAILABLE_PLAYERS = {
     "random": RandomPlayer,
     "mcts": BasicMCTSPlayer,
     "mcts-recycler": RecyclerMCTSPlayer,
+    "mcts-rave": RAVEMCTSPlayer,
 }
 
 
@@ -198,10 +200,11 @@ def display_help() -> None:
     for name in AVAILABLE_PLAYERS.keys():
         print(f"  {name}")
     print("\nExamples:")
-    print("  python main.py                    # 5x5, random vs mcts, 1 game (verbose)")
-    print("  python main.py 4                  # 4x4, random vs mcts, 1 game (verbose)")
-    print("  python main.py 5 mcts mcts-recycler 5    # 5x5, mcts vs mcts-recycler, 5 games (stats)")
-    print("  python main.py 3 mcts-recycler random 10  # 3x3, mcts-recycler vs random, 10 games")
+    print("  python main.py                         # 5x5, random vs mcts, 1 game (verbose)")
+    print("  python main.py 4                       # 4x4, random vs mcts, 1 game (verbose)")
+    print("  python main.py 5 mcts mcts-recycler 5  # 5x5, mcts vs mcts-recycler, 5 games (stats)")
+    print("  python main.py 5 mcts-recycler mcts-rave 5  # mcts-recycler vs RAVE (Phase 3)")
+    print("  python main.py 3 mcts-rave random 10   # 3x3, RAVE vs random, 10 games")
     print(f"{'='*60}\n")
 
 
