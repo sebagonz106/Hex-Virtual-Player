@@ -317,7 +317,7 @@ class RAVEMCTSPlayer(Player):
             if result == current.player_id:
                 current.win_count += 1
             
-            # RAVE/AMAF update: all moves in playout get updated
+            # All moves in playout get updated
             if current.parent is not None and amaf_sequence:
                 for move in amaf_sequence:
                     if move not in current.amaf_visits:
