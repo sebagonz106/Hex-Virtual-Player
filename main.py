@@ -9,6 +9,7 @@ from players.random_player import RandomPlayer
 from players.basic_MCTS_player import BasicMCTSPlayer
 from players.recycler_MCTS_player import RecyclerMCTSPlayer
 from players.RAVE_MCTS_player import RAVEMCTSPlayer
+from players.progressive_MCTS_player import ProgressiveMCTSPlayer
 from typing import Optional, Type
 
 
@@ -18,6 +19,7 @@ AVAILABLE_PLAYERS = {
     "mcts": BasicMCTSPlayer,
     "mcts-recycler": RecyclerMCTSPlayer,
     "mcts-rave": RAVEMCTSPlayer,
+    "mcts-progressive": ProgressiveMCTSPlayer,
 }
 
 
@@ -204,6 +206,7 @@ def display_help() -> None:
     print("  python main.py 4                       # 4x4, random vs mcts, 1 game (verbose)")
     print("  python main.py 5 mcts mcts-recycler 5  # 5x5, mcts vs mcts-recycler, 5 games (stats)")
     print("  python main.py 5 mcts-recycler mcts-rave 5  # mcts-recycler vs RAVE (Phase 3)")
+    print("  python main.py 5 mcts-rave mcts-progressive 5  # RAVE vs Progressive (Phase 4)")
     print("  python main.py 3 mcts-rave random 10   # 3x3, RAVE vs random, 10 games")
     print(f"{'='*60}\n")
 

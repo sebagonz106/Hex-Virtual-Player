@@ -338,6 +338,7 @@ class RecyclerMCTSPlayer(Player):
             reused_node = self.root.children[opp_move]
             self.tree_reused_count += 1
             print(f"[Player {self.player_id}] Tree recycled from move {opp_move} with {reused_node.visit_count} visits")
+            reused_node.parent = None  # Detach from old parent to avoid memory issues 
             return reused_node
         else:
             # Move not found in tree (shouldn't happen, but fallback to reset)

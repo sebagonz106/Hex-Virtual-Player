@@ -1,4 +1,11 @@
-"""RAVE MCTS player for Hex game."""
+"""
+Monte Carlo Tree Search player for Hex with Progressive Strategies.
+
+Implements MCTS with:
+- RAVE/AMAF enhancement for faster convergence
+- Tree recycling between moves for efficiency
+- Phase-adaptive parameters (Progressive Bias) - Chaslot 2008
+"""
 
 from __future__ import annotations
 import time
@@ -14,16 +21,17 @@ from players.utils.early_check import (
     get_opponent_forcing_move,
     suggest_opening_move,
 )
+from players.utils.game_phase import GamePhaseManager
 
 
-class _RAVEMCTSNode:
+class _ProgressiveMCTSNode:
     """Node in the MCTS tree with RAVE/AMAF statistics."""
 
     def __init__(
         self,
         board: BoardOptimized,
         player_id: int,
-        parent: Optional[_RAVEMCTSNode] = None,
+        parent: Optional[_ProgressiveMCTSNode] = None,
         depth: int = 0,
     ):
         """
@@ -37,7 +45,7 @@ class _RAVEMCTSNode:
         """
         self.board = board
         self.player_id = player_id
-        self.parent: Optional[_RAVEMCTSNode] = parent
+        self.parent: Optional[_ProgressiveMCTSNode] = parent
         self.depth = depth
         self.children = {}
         
@@ -79,7 +87,7 @@ class _RAVEMCTSNode:
         ) if self.parent else 0
         return exploitation + exploration
 
-    def select_best_child_with_rave(self, exploration_c: float, rave_bias: float = 0.00025) -> Optional[_RAVEMCTSNode]:
+    def select_best_child_with_rave(self, exploration_c: float, rave_bias: float = 0.00025) -> Optional[_ProgressiveMCTSNode]:
         """
         Select child using UCT+RAVE combined value.
         
@@ -135,20 +143,21 @@ class _RAVEMCTSNode:
         
         return max(self.children.values(), key=combined_value)
 
-    def expand(self, move: Tuple[int, int], player_id: int) -> _RAVEMCTSNode:
+    def expand(self, move: Tuple[int, int], player_id: int) -> _ProgressiveMCTSNode:
         """
-        Expand a new child node.
+        Expand a new child node by placing a move on the board.
         
         Args:
             move: Move coordinates (row, col).
             player_id: Player ID for new state.
             
         Returns:
-            New child node.
+            New child node created from this expansion.
         """
+        
         new_board = self.board.clone()
         new_board.place_piece(move[0], move[1], self.player_id)
-        child = _RAVEMCTSNode(new_board, player_id, parent=self, depth=self.depth + 1)
+        child = _ProgressiveMCTSNode(new_board, player_id, parent=self, depth=self.depth + 1)
         self.children[move] = child
         self.reverse_children[id(child)] = move  # O(1) reverse lookup
         return child
@@ -170,7 +179,7 @@ class _RAVEMCTSNode:
         return None
 
 
-class RAVEMCTSPlayer(Player):
+class ProgressiveMCTSPlayer(Player):
     """
     Monte Carlo Tree Search player for Hex with RAVE/AMAF and tree recycling.
     
@@ -179,42 +188,41 @@ class RAVEMCTSPlayer(Player):
     - Tree Recycling: Between moves, detects opponent's move via board
        comparison and reuses the search tree, improving efficiency.
     
-    - RAVE Enhancement: All-Moves-As-First statistics track value estimates
+    - RAVE: All-Moves-As-First statistics track value estimates
       for moves regardless of their position in the tree. Combines UCT and
       RAVE for faster convergence during early iterations.
+
+    - Phase-Adaptive Strategies: Adjusts exploration and RAVE parameters
+      dynamically based on the current game phase (OPENING, MIDGAME, ENDGAME)
+      to optimize search efficiency and move quality.
 
     """
 
     MAX_DEPTH = 50  # Limit depth to prevent infinite loops in large boards
     ALPHA = 0.7  # visit count importance factor for final move selection
 
-    def __init__(self, player_id: int, max_time: float = 4.98, exploration_c: float = 0.5, rave_bias: float = 0.00025):
+    def __init__(self, player_id: int, max_time: float = 4.98):
         """
-        Initialize RAVE-MCTS player with tree recycling capabilities.
+        Initialize Progressive-MCTS player with Phase-Adaptive Strategies.
         
         Args:
             player_id: Player ID (1 or 2).
             max_time: Maximum time per move in seconds (default 4.98).
-            exploration_c: UCT exploration constant (default 0.5).
-                           Controls exploration vs exploitation balance.
-                           Higher -> more exploration, lower -> more exploitation.
-            rave_bias: Bias for RAVE decay function (default 0.00025).
-                       Higher values -> faster transition to UCT only.
-                       Lower values -> longer phase of UCT+RAVE combination.
         """
         super().__init__(player_id)
         self.max_time = max_time
-        self.exploration_c = exploration_c
-        self.rave_bias = rave_bias
+        
+        # Phase-aware parameter management
+        self.phase_manager = GamePhaseManager()
         
         # Tree recycling state
         self.board: Optional[BoardOptimized] = None
-        self.root: Optional[_RAVEMCTSNode] = None
+        self.root: Optional[_ProgressiveMCTSNode] = None
         self.tree_reused_count = 0  # Statistics: tracks successful tree reuses
 
     def play(self, board: HexBoard) -> Tuple[int, int]:
         """
-        Select best move using MCTS with tree recycling and time control.
+        Select best move using MCTS with Progressive Strategies, tree recycling, and time control.
         
         Attempts to reuse the search tree from the previous turn by detecting
         the opponent's move and continuing from the appropriate subtree.
@@ -242,7 +250,7 @@ class RAVEMCTSPlayer(Player):
         root = self._find_reusable_root(new_board)
         if root is None:
             # No recycling possible, create fresh root
-            root = _RAVEMCTSNode(new_board, self.player_id)
+            root = _ProgressiveMCTSNode(new_board, self.player_id)
 
         # Early check: immediate winning move
         win_move = get_immediate_winning_move(new_board, self.player_id)
@@ -257,7 +265,7 @@ class RAVEMCTSPlayer(Player):
             self._save_state_for_recycling(new_board, root, block_move)
             return block_move
 
-        # MCTS search using optimized board
+        # MCTS search with dynamic phase-adapted parameters
         while time.time() - time_start < self.max_time:
             self._mcts_iteration(root)
 
@@ -268,19 +276,27 @@ class RAVEMCTSPlayer(Player):
         self._save_state_for_recycling(new_board, root, best_move)
 
         elapsed = time.time() - time_start
-        print(f"[Player {self.player_id}] RAVE-MCTS move in {elapsed:.4f}s | exploration_c={self.exploration_c} | rave_bias = {self.rave_bias} | tree_reused={self.tree_reused_count} times")
+        root_phase = self._calculate_phase(root)
+        params = self.phase_manager.get_parameters(root_phase)
+        print(
+            f"[Player {self.player_id}] Progressive-MCTS| "
+            f"iterations={root.visit_count} | time={elapsed:.4f}s | tree_reused={self.tree_reused_count} times"
+        )
         
         return best_move
 
-    def _mcts_iteration(self, root: _RAVEMCTSNode) -> None:
+    def _mcts_iteration(self, root: _ProgressiveMCTSNode) -> None:
         """
-        Execute one MCTS iteration with RAVE/AMAF support.
+        Execute one MCTS iteration with RAVE/AMAF and dynamic phase-adaptive parameters.
         
-        Phases:
-        1. Selection: descend using UCT+RAVE
-        2. Expansion: add a new node with untried move
+        Phase is calculated per node during tree descent based on node.visit_count (iterations).
+        This allows each node to independently determine its search phase maturity.
+        
+        Phases of one iteration:
+        1. Selection: descend using UCT+RAVE with phase-specific parameters
+        2. Expansion: add new node with untried move
         3. Simulation: random playout with AMAF tracking
-        4. Backpropagation: update UCT path and AMAF statistics
+        4. Backpropagation: update UCT and AMAF statistics along path
         
         Args:
             root: Root node of MCTS tree.
@@ -289,27 +305,34 @@ class RAVEMCTSPlayer(Player):
         node = root
 
         while not node.is_terminal() and node.depth < self.MAX_DEPTH:
+            # Calculate phase for current node based on its visit_count (search maturity)
+            current_phase = self._calculate_phase(node)
+            params = self.phase_manager.get_parameters(current_phase)
+            
             if node.untried_moves:
                 # Expansion: try a random untried move
                 move = node.untried_moves.pop()
                 next_player_id = 3 - node.player_id
-                node = node.expand(move, next_player_id)
+                
+                # Expand new child node
+                child = node.expand(move, next_player_id)
+                node = child
                 break
             else:
                 # Selection: use UCT+RAVE to select best child
-                child = node.select_best_child_with_rave(self.exploration_c, self.rave_bias)
+                child = node.select_best_child_with_rave(params["exploration_c"], params["rave_bias"])
                 if child is None:
                     break
                 node = child
 
-        # Simulation: random playout from node WITH AMAF tracking
+        # Simulation: random playout from node with AMAF tracking
         if node.is_terminal():
             result = node.get_winner()
             amaf_sequence = []
         else:
             result, amaf_sequence = self._play_random_playout_with_amaf(node)
 
-        # Backpropagation: update UCT path AND AMAF statistics
+        # Backpropagation: update UCT path and AMAF statistics
         current = node
         while current is not None:
             # Traditional UCT update
@@ -318,6 +341,7 @@ class RAVEMCTSPlayer(Player):
                 current.win_count += 1
             
             # All moves in playout get updated
+            # AMAF statistics persist in the recycled tree
             if current.parent is not None and amaf_sequence:
                 for move in amaf_sequence:
                     if move not in current.amaf_visits:
@@ -327,10 +351,10 @@ class RAVEMCTSPlayer(Player):
                     current.amaf_visits[move] += 1
                     if result == current.player_id:
                         current.amaf_wins[move] += 1
-            
+
             current = current.parent
 
-    def _play_random_playout_with_amaf(self, node: _RAVEMCTSNode) -> Tuple[int, list]:
+    def _play_random_playout_with_amaf(self, node: _ProgressiveMCTSNode) -> Tuple[int, list]:
         """
         Play a random playout from node, tracking All-Moves-As-First (AMAF).
         
@@ -372,6 +396,27 @@ class RAVEMCTSPlayer(Player):
         # Board is full with no winner (shouldn't happen in Hex)
         return 3 - current_player, moves_played
 
+    def _calculate_phase(self, node: _ProgressiveMCTSNode) -> str:
+        """
+        Determine game phase based on node visit count (iterations/search progression).
+        
+        Each node independently tracks its own phase based on how many simulations
+        have been performed through it. Siblings or parent/child nodes can be in
+        different phases simultaneously, depending on their individual visit counts.
+        
+        Scientific basis (Chaslot et al. 2008, "Progressive Strategies for MCTS"):
+        > "A progressive strategy is similar to a simulation strategy when a few 
+        > games have been played, and converges to a selection strategy when 
+        > numerous games have been played."
+        
+        Args:
+            node: MCTS node with visit_count representing iteration maturity
+            
+        Returns:
+            Phase identifier: "OPENING" | "MIDGAME" | "ENDGAME"
+        """
+        return self.phase_manager.get_phase(node.visit_count) if node.parent else "MIDGAME"  # Root stays in MIDGAME phase for balanced parameters
+
     def _find_board_difference(self, board1: BoardOptimized, board2: BoardOptimized) -> Optional[Tuple[int, int]]:
         """
         Find the single move that differs between two boards.
@@ -407,7 +452,7 @@ class RAVEMCTSPlayer(Player):
         else:
             return None
 
-    def _find_reusable_root(self, current_board: BoardOptimized) -> Optional[_RAVEMCTSNode]:
+    def _find_reusable_root(self, current_board: BoardOptimized) -> Optional[_ProgressiveMCTSNode]:
         """
         Attempt to find a reusable root node from the previous search tree.
         
@@ -439,13 +484,13 @@ class RAVEMCTSPlayer(Player):
             reused_node = self.root.children[opp_move]
             self.tree_reused_count += 1
             print(f"[Player {self.player_id}] Tree recycled from move {opp_move} with {reused_node.visit_count} visits")
-            reused_node.parent = None  # Detach from old parent to avoid memory issues  
+            reused_node.parent = None  # Detach from old parent to prevent memory leaks
             return reused_node
         else:
             # Move not found in tree (shouldn't happen, but fallback to reset)
             return None
 
-    def _save_state_for_recycling(self, board: BoardOptimized, root: _RAVEMCTSNode, best_move: Tuple[int, int]) -> None:
+    def _save_state_for_recycling(self, board: BoardOptimized, root: _ProgressiveMCTSNode, best_move: Tuple[int, int]) -> None:
         """
         Save the current state for potential recycling in the next turn.
         
@@ -477,7 +522,7 @@ class RAVEMCTSPlayer(Player):
         self.root = None
         self.tree_reused_count = 0
         
-    def _select_best_move(self, root: _RAVEMCTSNode) -> Tuple[int, int]:
+    def _select_best_move(self, root: _ProgressiveMCTSNode) -> Tuple[int, int]:
         """
         Select best move from root by a heuristic approach that values both
         visit count and win rate.

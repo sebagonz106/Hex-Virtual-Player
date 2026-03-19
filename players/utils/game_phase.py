@@ -18,33 +18,30 @@ class GamePhaseManager:
     have been played."
     
     Phases (based on visit count at each node):
-    - OPENING (0-30 visits):     Simulation strategy dominates, heuristics guide
-    - MIDGAME (30-100 visits):    Transition between simulation and selection
-    - ENDGAME (100+ visits):      Selection strategy dominates, UCT pure
+    - OPENING: Simulation strategy dominates, heuristics guide
+    - MIDGAME: Transition between simulation and selection
+    - ENDGAME: Selection strategy dominates, UCT pure
     """
     
     # Visit count thresholds for phase transitions (calibrated for Hex, similar to Mango Go)
-    _OPENING_THRESHOLD = 30      # Below: simulation strategy dominates
-    _ENDGAME_THRESHOLD = 100     # Above: selection strategy dominates
+    _OPENING_THRESHOLD = 100      # Below: simulation strategy dominates
+    _ENDGAME_THRESHOLD = 2000     # Above: selection strategy dominates
     
     # Adaptive parameters per game phase
     _PHASE_PARAMETERS = {
         "OPENING": {
-            "exploration_c": 0.7,         # Increased exploration in opening phase
+            "exploration_c": 0.8,         # Increased exploration in opening phase
             "rave_bias": 0.0001,          # RAVE dominates longer
-            "max_depth": 50,              # No practical limit (high value)
             "use_heuristics": False,      # Heuristics not reliable in opening
         },
         "MIDGAME": {
-            "exploration_c": 0.4,         # Standard balance (Cazenave empirically optimal)
+            "exploration_c": 0.5,         # Standard balance
             "rave_bias": 0.00025,         # RAVE and UCT balanced
-            "max_depth": 50,              # Standard search depth
             "use_heuristics": False,      # Heuristics still unreliable
         },
         "ENDGAME": {
-            "exploration_c": 0.1,         # Deep exploitation phase
-            "rave_bias": 0.001,           # Rapid transition to pure UCT
-            "max_depth": 100,             # Deeper search (naturally small tree)
+            "exploration_c": 0.2,         # Deep exploitation phase
+            "rave_bias": 0.0005,           # Rapid transition to pure UCT
             "use_heuristics": True,       # Deterministic threat detection enabled
         },
     }

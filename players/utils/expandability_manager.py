@@ -4,6 +4,8 @@ from __future__ import annotations
 import math
 from typing import Optional, TYPE_CHECKING
 
+from shapely import node
+
 if TYPE_CHECKING:
     from progressive_MCTS_player import _ProgressiveMCTSNode
 
@@ -109,6 +111,10 @@ class ExpandabilityManager:
         Returns:
             Boolean - True if another child can be expanded, False if k(n) limit reached
         """
+        # No limit at root level: explore all moves
+        if node.parent is None:
+            return True
+    
         max_expandable = ExpandabilityManager.get_max_expandable_children(
             phase, 
             node.visit_count
