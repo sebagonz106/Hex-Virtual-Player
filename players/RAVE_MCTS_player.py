@@ -1,4 +1,4 @@
-"""Basic MCTS player for Hex game."""
+"""RAVE MCTS player for Hex game."""
 
 from __future__ import annotations
 import time
@@ -95,9 +95,6 @@ class _RAVEMCTSNode:
         - c: visit_count (simulations at this node)
         - bias: 0.00025 (empirically optimal from Table 4, Cazenave 2009)
         
-        OPTIMIZATION: Uses reverse_children mapping for O(1) move lookup,
-        avoiding O(n) loop in every UCT evaluation.
-        
         Args:
             exploration_c: Exploration constant for UCT.
             rave_bias: Bias for decay function (default 0.00025).
@@ -177,20 +174,15 @@ class RAVEMCTSPlayer(Player):
     """
     Monte Carlo Tree Search player for Hex with RAVE/AMAF and tree recycling.
     
-    Implements MCTS with three major enhancements:
+    Implements MCTS with:
     
-    1. **UCT Selection (Phase 1):** Upper Confidence bounds for Trees selection
-       enables exploration-exploitation balance during tree descent.
+    - Tree Recycling: Between moves, detects opponent's move via board
+       comparison and reuses the search tree, improving efficiency.
     
-    2. **Tree Recycling (Phase 2):** Between moves, detects opponent's move
-       via board comparison and reuses the search tree, improving efficiency.
-    
-    3. **RAVE Enhancement (Phase 3):** All-Moves-As-First statistics track
-       value estimates for moves regardless of their position in the tree.
-       Combines UCT and RAVE for faster convergence during early iterations.
-    
-    Scientific References:
-    - Cazenave & Saffidine (2009): Implementation in YOPT Hex player
+    - RAVE Enhancement: All-Moves-As-First statistics track value estimates
+      for moves regardless of their position in the tree. Combines UCT and
+      RAVE for faster convergence during early iterations.
+
     """
 
     MAX_DEPTH = 50  # Limit depth to prevent infinite loops in large boards

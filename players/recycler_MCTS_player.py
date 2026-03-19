@@ -1,4 +1,4 @@
-"""Basic MCTS player for Hex game."""
+"""Basic MCTS player for Hex game with node recycling."""
 
 from __future__ import annotations
 import time
