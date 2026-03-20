@@ -135,7 +135,7 @@ class BoardOptimized:
                     idx = self._cell_to_idx(r, c)
 
                     # Process all neighbors; redundant unions return None
-                    for nr, nc in self._neighbors(r, c):
+                    for nr, nc in self.neighbors(r, c):
                         if self.board[nr][nc] == player_id:
                             n_idx = self._cell_to_idx(nr, nc)
                             self._union(idx, n_idx)
@@ -199,7 +199,7 @@ class BoardOptimized:
                     unions_in_move.append(snapshot)
 
         # Connect with neighbors of the same color
-        for nr, nc in self._neighbors(row, col):
+        for nr, nc in self.neighbors(row, col):
             if self.board[nr][nc] == player_id:
                 n_idx = self._cell_to_idx(nr, nc)
                 snapshot = self._union(idx, n_idx)
@@ -257,7 +257,7 @@ class BoardOptimized:
         """Get current empty positions."""
         return self._empty_positions.copy()
 
-    def _neighbors(self, row: int, col: int) -> list:
+    def neighbors(self, row: int, col: int) -> list:
         """
         Get adjacent neighbors in even-r hexagonal grid layout.
         
@@ -308,6 +308,56 @@ class BoardOptimized:
     def total_pieces(self) -> int:
         """Count total non-empty pieces."""
         return self.size * self.size - len(self._empty_positions)
+    
+    def move_priority_info(self, player: int, pos: Tuple[int, int]) -> Tuple[int, int, int, int]:
+        """
+        Information needed for move priority analysis based on connection potential for both players.
+
+        Args:
+            board (BoardOptimized): board
+            player (int): player
+            pos (Tuple[int, int]): position
+
+        Returns:
+            (int, int, int, int):  (our_neighbors, opp_neighbors, our_bridges, opp_bridges)
+        """
+
+        if(self.board[pos[0]][pos[1]] != 0):
+            return 0, 0, 0, 0 # Invalid move, no priority
+
+        our_neighbors = 0
+        opp_neighbors = 0
+        our_bridges = 0
+        opp_bridges = 0
+
+        empty_neighbours = []
+
+        for nr, nc in self.neighbors(pos[0], pos[1]):
+            if self.board[nr][nc] == player:
+                our_neighbors += 1
+            elif self.board[nr][nc] == 3 - player:
+                opp_neighbors += 1
+            else:
+                empty_neighbours.append((nr, nc))
+
+        if len(empty_neighbours) > 1:
+            for r, c in empty_neighbours:
+                current_neighbours = self.neighbors(r, c)
+                for nr, nc in empty_neighbours:
+                    if (nr == r and nc == c) or not (nr, nc) in current_neighbours:
+                        continue
+                    # Get common neighbours
+                    candidates = [(x,y) for (x,y) in current_neighbours if (x, y) in self.neighbors(nr, nc)]
+                    
+                    if len(candidates) > 0: 
+                        x, y = candidates[0] # Just one possible candidate
+                        if self.board[x][y] == player:
+                            our_bridges += 1
+                        elif self.board[x][y] == 3 - player:
+                            opp_bridges += 1
+
+        return opp_neighbors, our_neighbors, opp_bridges, our_bridges #connection heuristic data
+    
 
     def clone(self) -> "BoardOptimized":
         """

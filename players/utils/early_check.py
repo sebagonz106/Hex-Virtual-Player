@@ -23,7 +23,7 @@ def get_immediate_winning_move(board: BoardOptimized, player_id: int) -> Optiona
     for r in range(board.size):
         for c in range(board.size):
             if board.board[r][c] == player_id:
-                for nr, nc in board._neighbors(r, c):
+                for nr, nc in board.neighbors(r, c):
                     if board.board[nr][nc] == 0:
                         candidates.add((nr, nc))
 
@@ -79,7 +79,7 @@ def suggest_opening_move(board: BoardOptimized, player_id: int) -> Optional[Tupl
 
     if total_pieces == 1:
         # Get neighbors of center
-        neighbors = list(board._neighbors(center_r, center_c))
+        neighbors = list(board.neighbors(center_r, center_c))
         empty_neighbors = [
             (r, c) for r, c in neighbors if board.board[r][c] == 0
         ]

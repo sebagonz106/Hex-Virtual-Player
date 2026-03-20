@@ -12,6 +12,7 @@ import time
 import random
 import math
 from typing import Optional, Tuple
+from heapq import heappush, heappop
 
 from board import HexBoard
 from players.player import Player
@@ -325,12 +326,19 @@ class ProgressiveMCTSPlayer(Player):
                     break
                 node = child
 
-        # Simulation: random playout from node with AMAF tracking
+        # Simulation: choose playout strategy based on game phase
         if node.is_terminal():
             result = node.get_winner()
             amaf_sequence = []
         else:
-            result, amaf_sequence = self._play_random_playout_with_amaf(node)
+            current_phase = self._calculate_phase(node)
+            
+            if current_phase == "ENDGAME":
+                # Use heuristic-guided playout for endgame (faster convergence)
+                result, amaf_sequence = self._play_endgame_playout_with_heuristics(node)
+            else:
+                # Use random playout for opening/midgame (pure MCTS)
+                result, amaf_sequence = self._play_random_playout_with_amaf(node)
 
         # Backpropagation: update UCT path and AMAF statistics
         current = node
@@ -395,6 +403,87 @@ class ProgressiveMCTSPlayer(Player):
 
         # Board is full with no winner (shouldn't happen in Hex)
         return 3 - current_player, moves_played
+
+    def _play_endgame_playout_with_heuristics(self, node: _ProgressiveMCTSNode) -> Tuple[int, list]:
+        """
+        Play a guided playout from node using endgame heuristics.
+        
+        Strategy (fallthrough order):
+        1. Winning move
+        2. Opponent threat block
+        3. Connection priority
+        4. Random move (fallback)
+        
+        This produces stronger playouts in endgame while maintaining MCTS purity
+        (no modification of statistics, only playout guidance).
+        
+        Args:
+            node: Starting node for playout.
+            
+        Returns:
+            Tuple of (winner, moves_sequence)
+        """
+        board = node.board.clone()
+        current_player = node.player_id
+        moves_played = []
+        heaps: dict = {current_player: [], 3 - current_player: []}  # Separate heaps for each player
+
+        for move in board.get_empty_positions():
+            info = board.move_priority_info(current_player, move)
+            # Heuristic: connection priority with max heap
+            heappush(heaps[current_player], (-self._evaluate_own_move_priority(info), move))  # Prioritize own connections and block opponent's
+            heappush(heaps[3 - current_player], (-self._evaluate_opponent_move_priority(info), move))
+        
+        while not board.is_full():
+            # ← Heuristic 1: WINNING MOVE (O(1), immediate victory)
+            winning_move = get_immediate_winning_move(board, current_player)
+            if winning_move:
+                board.place_piece(winning_move[0], winning_move[1], current_player)
+                moves_played.append(winning_move)
+                return current_player, moves_played
+            
+            # ← Heuristic 2: OPPONENT THREAT (O(1), must block)
+            threat_move = get_opponent_forcing_move(board, current_player)
+            if threat_move:
+                board.place_piece(threat_move[0], threat_move[1], current_player)
+                moves_played.append(threat_move)
+                current_player = 3 - current_player
+                continue
+            
+            # ← Heuristic 3: CONNECTION PRIORITY (O(1) per move, guides toward winning)
+            available_moves = board.get_empty_positions()
+            best_move = random.choice(list(available_moves))  # Default fallback if heaps are empty
+
+            while heaps[current_player]:
+                _, move = heappop(heaps[current_player])
+                if move in available_moves: # Checks for validity
+                    best_move = move
+                    break
+            
+            board.place_piece(best_move[0], best_move[1], current_player)
+            moves_played.append(best_move)
+            
+            # Check for win after placing
+            if board.check_connection(current_player):
+                return current_player, moves_played
+            
+            for nr, nc in board.neighbors(best_move[0], best_move[1]):
+                if board.board[nr][nc] == 0:
+                    # Update lazy heap
+                    info = board.move_priority_info(current_player, (nr, nc))
+                    heappush(heaps[current_player], (-self._evaluate_own_move_priority(info), (nr, nc)))
+                    heappush(heaps[3 - current_player], (-self._evaluate_opponent_move_priority(info), (nr, nc)))
+            
+            current_player = 3 - current_player
+        
+        # Board is full with no winner
+        return 0, moves_played
+
+    def _evaluate_own_move_priority(self, info: Tuple[int, int, int, int]) -> int:
+        return 5 * info[0] + 10 * info[1] + 15 * info[2] + 20 * info[3]
+    
+    def _evaluate_opponent_move_priority(self, info: Tuple[int, int, int, int]) -> int:
+        return 10 * info[0] + 5 * info[1] + 20 * info[2] + 15 * info[3]
 
     def _calculate_phase(self, node: _ProgressiveMCTSNode) -> str:
         """
