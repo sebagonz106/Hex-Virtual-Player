@@ -1,0 +1,585 @@
+"""Optimized board wrapper with Union-Find for efficient MCTS simulations."""
+
+from __future__ import annotations
+from typing import Set, Tuple, Optional, List
+from board import HexBoard
+from players.utils.board_optimized import BoardOptimized
+
+
+class UnionSnapshot:
+    """
+    Represents a snapshot of a Union-Find node state before a union operation.
+    
+    Stores the previous parent and rank values to enable reverting union operations.
+    """
+    
+    def __init__(self, node_idx: int, prev_parent: int, prev_rank: int):
+        """
+        Args:
+            node_idx: Index of the node whose state is captured.
+            prev_parent: Previous value of parent[node_idx].
+            prev_rank: Previous value of rank[node_idx].
+        """
+        self.node_idx = node_idx
+        self.prev_parent = prev_parent
+        self.prev_rank = prev_rank
+
+
+class BoardOptimizedWithFillin(BoardOptimized):
+    """
+    Optimized board representation with Union-Find for fast connection checking.
+    """
+
+    def __init__(self, hex_board: HexBoard, player_id: int = 1):
+        """
+        Initialize from HexBoard with Union-Find structure.
+        
+        Args:
+            hex_board: HexBoard instance to wrap.
+            player_id: ID of the player (1 or 2).
+            
+        Raises:
+            ValueError: If board size is invalid.
+        """
+        if not (0 < hex_board.size <= 25):
+            raise ValueError(f"Invalid board size: {hex_board.size}")
+
+        self.size = hex_board.size
+        self.board = [row[:] for row in hex_board.board]
+        self._empty_positions: Set[Tuple[int, int]] = self._compute_empty_positions()
+        self._neighbors_cache: dict = {}
+        self.player = player_id
+        self.opponent = 3 - player_id
+
+        self._apply_fillins()  # Apply fillin detection on initialization
+
+        # Union-Find structures (N² cells + 4 phantom nodes)
+        total_nodes = self.size * self.size + 4
+        self.parent = list(range(total_nodes))
+        self.rank = [0] * total_nodes
+
+        # Phantom nodes for win detection:
+        # - Player 1 (horizontal): connects left and right borders
+        # - Player 2 (vertical): connects top and bottom borders
+        self.P1_LEFT = self.size * self.size
+        self.P1_RIGHT = self.size * self.size + 1
+        self.P2_TOP = self.size * self.size + 2
+        self.P2_BOTTOM = self.size * self.size + 3
+
+        # Move history stack: each entry is a list of UnionSnapshot objects
+        # Enables undo operations without full state duplication
+        self.move_union_stack: List[List[UnionSnapshot]] = []
+        self.move_history: List[Tuple[int, int]] = []
+        
+        self._initialize_union_find()
+
+    def _compute_empty_positions(self) -> Set[Tuple[int, int]]:
+        """Compute set of all empty positions."""
+        empty = set()
+        for r in range(self.size):
+            for c in range(self.size):
+                if self.board[r][c] == 0:
+                    empty.add((r, c))
+        return empty
+
+    def _cell_to_idx(self, r: int, c: int) -> int:
+        """Convert (row, col) to linear index."""
+        return r * self.size + c
+
+    def _idx_to_cell(self, idx: int) -> Tuple[int, int]:
+        """Convert linear index to (row, col)."""
+        return divmod(idx, self.size)
+
+    def _find(self, x: int) -> int:
+        """
+        Find the root of element x in the Union-Find structure.
+        """
+        while self.parent[x] != x:
+            x = self.parent[x]
+        return x
+
+    def _union(self, x: int, y: int) -> Optional[UnionSnapshot]:
+        """
+        Perform union of two sets using union by rank strategy.
+        
+        Args:
+            x: First element.
+            y: Second element.
+            
+        Returns:
+            UnionSnapshot if union was performed, None if already in same component.
+        """
+        x_root = self._find(x)
+        y_root = self._find(y)
+
+        if x_root == y_root:
+            return None  # Already in same component
+
+        # Perform union by rank
+        if self.rank[x_root] < self.rank[y_root]:
+            snapshot = UnionSnapshot(x_root, self.parent[x_root], self.rank[x_root])
+            self.parent[x_root] = y_root
+        else:
+            snapshot = UnionSnapshot(y_root, self.parent[y_root], self.rank[y_root])
+            self.parent[y_root] = x_root
+            if self.rank[x_root] == self.rank[y_root]:
+                self.rank[x_root] += 1
+
+        return snapshot
+
+    def _initialize_union_find(self) -> None:
+        """
+        Initialize the Union-Find structure from the current board state.
+        
+        Connects adjacent pieces of the same player and border pieces to phantom nodes.
+        """
+        # Connect adjacent pieces of the same player
+        for r in range(self.size):
+            for c in range(self.size):
+                if self.board[r][c] != 0:
+                    player_id = self.board[r][c]
+                    idx = self._cell_to_idx(r, c)
+
+                    # Process all neighbors; redundant unions return None
+                    for nr, nc in self.neighbors(r, c):
+                        if self.board[nr][nc] == player_id:
+                            n_idx = self._cell_to_idx(nr, nc)
+                            self._union(idx, n_idx)
+
+        # Connect border pieces to phantom nodes
+        for r in range(self.size):
+            if self.board[r][0] == 1:
+                self._union(self._cell_to_idx(r, 0), self.P1_LEFT)
+            if self.board[r][self.size - 1] == 1:
+                self._union(self._cell_to_idx(r, self.size - 1), self.P1_RIGHT)
+
+        for c in range(self.size):
+            if self.board[0][c] == 2:
+                self._union(self._cell_to_idx(0, c), self.P2_TOP)
+            if self.board[self.size - 1][c] == 2:
+                self._union(self._cell_to_idx(self.size - 1, c), self.P2_BOTTOM)
+
+    def place_piece(self, row: int, col: int, player_id: int) -> bool:
+        """
+        Place a piece on the board and update the Union-Find structure.
+        
+        Automatically applies fillin detection to dead cells and isolated corners
+        after N/2 moves. All operations are recorded atomically for reliable undo.
+        
+        Args:
+            row: Row coordinate.
+            col: Column coordinate.
+            player_id: Player ID (1 or 2).
+            
+        Returns:
+            True if successful, False otherwise.
+        """
+        if not (0 <= row < self.size and 0 <= col < self.size):
+            return False
+        if self.board[row][col] != 0:
+            return False
+
+        self.board[row][col] = player_id
+        self._empty_positions.discard((row, col))
+
+        idx = self._cell_to_idx(row, col)
+        unions_in_move: List[UnionSnapshot] = []
+
+        # Connect to phantom nodes if on board edge
+        if player_id == 1:
+            if col == 0:
+                snapshot = self._union(idx, self.P1_LEFT)
+                if snapshot:
+                    unions_in_move.append(snapshot)
+            if col == self.size - 1:
+                snapshot = self._union(idx, self.P1_RIGHT)
+                if snapshot:
+                    unions_in_move.append(snapshot)
+        else:  # player_id == 2
+            if row == 0:
+                snapshot = self._union(idx, self.P2_TOP)
+                if snapshot:
+                    unions_in_move.append(snapshot)
+            if row == self.size - 1:
+                snapshot = self._union(idx, self.P2_BOTTOM)
+                if snapshot:
+                    unions_in_move.append(snapshot)
+
+        # Connect with neighbors of the same color
+        for nr, nc in self.neighbors(row, col):
+            if self.board[nr][nc] == player_id:
+                n_idx = self._cell_to_idx(nr, nc)
+                snapshot = self._union(idx, n_idx)
+                if snapshot:
+                    unions_in_move.append(snapshot)
+
+        # Record all unions from this move for atomic undo
+        self.move_union_stack.append(unions_in_move)
+        self.move_history.append((row, col))
+
+        return True
+
+    def undo_move(self) -> bool:
+        """
+        Revert the last move and all associated unions.
+        
+        Returns:
+            True if successful, False if no moves to undo.
+        """
+        if not self.move_history:
+            return False
+
+        row, col = self.move_history.pop()
+        self.board[row][col] = 0
+        self._empty_positions.add((row, col))
+
+        # Retrieve all unions from the last move
+        unions_to_undo = self.move_union_stack.pop()
+
+        # Revert each union in reverse order
+        for snapshot in reversed(unions_to_undo):
+            self.parent[snapshot.node_idx] = snapshot.prev_parent
+            self.rank[snapshot.node_idx] = snapshot.prev_rank
+
+        return True
+
+    def _apply_fillins(self) -> None:
+        """
+        Fill dead cells and isolated corners on the board. Called on creation.
+        
+        Uses pattern matching to identify provably useless cells and fills them
+        with their designated player.
+
+        Complexity: O(E) where E is the number of empty cells.
+        """
+        fillable = self._get_fillable_cells()
+
+        for (r, c), fill_player in fillable:
+            # Fill the cell with the designated player
+            self.board[r][c] = fill_player
+            self._empty_positions.discard((r, c))
+
+    def check_connection(self, player_id: int) -> bool:
+        """
+        Check if the player has achieved a winning connection.
+        
+        Args:
+            player_id: Player ID (1 or 2).
+            
+        Returns:
+            True if player has a winning connection, False otherwise.
+        """
+        if player_id == 1:
+            # Player 1 wins if left and right borders are connected
+            return self._find(self.P1_LEFT) == self._find(self.P1_RIGHT)
+        else:
+            # Player 2 wins if top and bottom borders are connected
+            return self._find(self.P2_TOP) == self._find(self.P2_BOTTOM)
+
+    def get_empty_positions(self) -> Set[Tuple[int, int]]:
+        """Get current empty positions."""
+        return self._empty_positions.copy()
+
+    def neighbors(self, row: int, col: int) -> list:
+        """
+        Get adjacent neighbors in even-r hexagonal grid layout.
+        
+        Results are cached for performance optimization.
+        
+        Args:
+            row: Row coordinate.
+            col: Column coordinate.
+            
+        Returns:
+            List of adjacent neighbor coordinates as (row, col) tuples.
+        """
+        key = (row, col)
+        if key in self._neighbors_cache:
+            return self._neighbors_cache[key]
+
+        neighbors = []
+        if row % 2 == 0:
+            directions = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, -1), (1, 0)]
+        else:
+            directions = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, 1)]
+
+        for dr, dc in directions:
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < self.size and 0 <= nc < self.size:
+                neighbors.append((nr, nc))
+
+        self._neighbors_cache[key] = neighbors
+        return neighbors
+
+    def is_full(self) -> bool:
+        """Check if board is completely filled."""
+        return len(self._empty_positions) == 0
+
+    def is_empty(self) -> bool:
+        """Check if board is completely empty."""
+        return len(self._empty_positions) == self.size * self.size
+
+    def count_pieces(self, player_id: int) -> int:
+        """Count pieces for a given player."""
+        count = 0
+        for r in range(self.size):
+            for c in range(self.size):
+                if self.board[r][c] == player_id:
+                    count += 1
+        return count
+
+    def total_pieces(self) -> int:
+        """Count total non-empty pieces."""
+        return self.size * self.size - len(self._empty_positions)
+    
+    def move_priority_info(self, player: int, pos: Tuple[int, int]) -> Tuple[int, int, int, int]:
+        """
+        Information needed for move priority analysis based on connection potential for both players.
+
+        Args:
+            board (BoardOptimized): board
+            player (int): player
+            pos (Tuple[int, int]): position
+
+        Returns:
+            (int, int, int, int):  (opp_neighbors, our_neighbors, opp_bridges, our_bridges)
+        """
+
+        if(self.board[pos[0]][pos[1]] != 0):
+            return 0, 0, 0, 0 # Invalid move, no priority
+
+        our_neighbors = 0
+        opp_neighbors = 0
+        our_bridges = 0
+        opp_bridges = 0
+
+        empty_neighbours = []
+
+        for nr, nc in self.neighbors(pos[0], pos[1]):
+            if self.board[nr][nc] == player:
+                our_neighbors += 1
+            elif self.board[nr][nc] == 3 - player:
+                opp_neighbors += 1
+            else:
+                empty_neighbours.append((nr, nc))
+
+        if len(empty_neighbours) > 1:
+            for r, c in empty_neighbours:
+                current_neighbours = self.neighbors(r, c)
+                for nr, nc in empty_neighbours:
+                    if (nr == r and nc == c) or not (nr, nc) in current_neighbours:
+                        continue
+                    # Get common neighbours
+                    candidates = [(x,y) for (x,y) in current_neighbours if (x, y) in self.neighbors(nr, nc)]
+                    
+                    if len(candidates) > 0: 
+                        x, y = candidates[0] # Just one possible candidate
+                        if self.board[x][y] == player:
+                            our_bridges += 1
+                        elif self.board[x][y] == 3 - player:
+                            opp_bridges += 1
+
+        return opp_neighbors, our_neighbors, opp_bridges, our_bridges #connection heuristic data
+    
+
+    def clone(self) -> "BoardOptimizedWithFillin":
+        """
+        Create a deep copy of this board with complete state.
+        
+        Includes Union-Find structure, move history, and fillin tracking
+        for complete state restoration during undo operations.
+        """
+        new_board = BoardOptimizedWithFillin.__new__(BoardOptimizedWithFillin)
+        new_board.size = self.size
+        new_board.board = [row[:] for row in self.board]
+        new_board._empty_positions = self._empty_positions.copy()
+        new_board._neighbors_cache = self._neighbors_cache
+
+        # Union-Find state
+        new_board.parent = self.parent.copy()
+        new_board.rank = self.rank.copy()
+
+        # Phantom nodes
+        new_board.P1_LEFT = self.P1_LEFT
+        new_board.P1_RIGHT = self.P1_RIGHT
+        new_board.P2_TOP = self.P2_TOP
+        new_board.P2_BOTTOM = self.P2_BOTTOM
+
+        # Move history
+        new_board.move_union_stack = [
+            [UnionSnapshot(s.node_idx, s.prev_parent, s.prev_rank) for s in move]
+            for move in self.move_union_stack
+        ]
+        new_board.move_history = self.move_history.copy()
+
+        return new_board
+
+    def _get_fillable_cells(self) -> List[Tuple[Tuple[int, int], int]]:
+        """
+        Return only empty cells that are strategically playable for move selection.
+        
+        Excludes dead cells, captured regions, and isolated corners that provide
+        no strategic value. This filtered list is meant to be used in the selection
+        of candidate moves during tree traversal and simulation.
+        
+        Filtering Strategy (Local Patterns):
+        - Detects provably inferior cells using constant-time O(1) pattern matching
+        - Examines only immediate neighbors (max 6 per hexagonal grid)
+        - No expensive graph decomposition or H-search required
+        
+        Returns:
+            List of ((row, col), fill) tuples representing fillable empty cell positions.
+        """
+        fillable = []
+
+        # if len(self._empty_positions) > self.size * math.sqrt(self.size):
+        #     return list(self.get_empty_positions()) # Early game: no need for filtering, return all empty cells
+        
+        for r, c in self._empty_positions:
+            # Skip cells that fail any inferior cell detection pattern
+            
+            fill = self._is_isolated_corner(r, c)
+            if fill != 0:
+                fillable.append(((r, c), fill))
+                continue  # Isolated corner: no connection path to friendly territory
+            
+            fill = self._is_dead_cell(r, c)
+            if fill != 0:
+                fillable.append(((r, c), fill))
+                continue  # Dead cell: provably useless for both players
+            
+            # if self._is_captured_cell(r, c):
+            #     continue  # Captured cell: opponent has winning second-player strategy
+        
+        return fillable
+
+    def _is_dead_cell(self, r: int, c: int) -> int:
+        """
+        Detect dead cells: empty cells provably useless for both players.
+        
+        A cell is classified as dead if it is heavily trapped by occupied pieces
+        or completely surrounded by a single opponent's stones, eliminating any
+        strategic value for either player.
+        
+        Detection Patterns (based on local 6-neighbor analysis):
+        - Pattern B: 4+ occupied neighbors all same color -> cell controlled by player
+        
+        Complexity: O(1) - constant number of neighbors per hexagonal cell (max 6)
+        
+        Args:
+            r:      Row coordinate of cell to evaluate.
+            c:      Column coordinate of cell to evaluate.
+
+        Returns:
+            1 or 2 if cell is dead and should be excluded from playable moves.
+            0 if cell may have strategic value.
+        """
+        neighbors_list = self.neighbors(r, c)
+        occupied = 0
+        occupied_colors = {1: 0, 2: 0}
+        
+        # Count occupied neighbors and their controlling player
+        for nr, nc in neighbors_list:
+            cell_state = self.board[nr][nc]
+            if cell_state != 0:
+                occupied += 1
+                occupied_colors[cell_state] += 1
+        
+        dominant_color = 1 if occupied_colors[1] > occupied_colors[2] else 2
+
+        # Dead Cell: Uniform occupation -> cell controlled by player
+        if occupied_colors[dominant_color] >= 4 and occupied_colors[3 - dominant_color] <= 1:
+            if len(set(occupied_colors)) == 1:
+                return dominant_color # 2-bridge
+
+        return 0
+    
+    # def _is_captured_cell(self, r: int, c: int) -> int:
+    #     """
+    #     Detect captured cells: empty cells that does not affect opponent dominance
+    #     over the corresponding area.
+        
+    #     A cell is classified as captured if it is heavily trapped by opponent 2-bridges
+    #     in the form of 3+ occupied non-adjacent neighbors with zero friendly positions
+
+    #     Complexity: O(1) - constant number of neighbors per hexagonal cell (max 6)
+        
+    #     Args:
+    #         r:      Row coordinate of cell to evaluate.
+    #         c:      Column coordinate of cell to evaluate.
+            
+    #     Returns:
+    #         1 or 2 if cell is captured and should be filled.
+    #         0 if cell may have strategic value.
+    #     """
+    #     neighbors_list = self.neighbors(r, c)
+    #     occupied = []
+    #     occupied_colors = []
+        
+    #     # Count occupied neighbors and their controlling player
+    #     for nr, nc in neighbors_list:
+    #         cell_state = self.board[nr][nc]
+    #         if cell_state != 0:
+    #             occupied.append((nr, nc))
+    #             occupied_colors.append(cell_state)
+
+    #     unique_colors = set(occupied_colors)
+
+    #     # Captured Cell Pattern: Strong player presence with zero opponent neighbors -> cell dominated by one player    
+    #     if len(occupied)  >= 3:
+    #         if len(unique_colors) == 1:  
+    #             # All neighbors belong to player
+    #             for x, y in occupied:
+    #                 for nx, ny in self.neighbors(x, y):
+    #                     if (nx, ny) in occupied:
+    #                         return 0 # Not a captured cell, has adjacent occupied neighbor
+                
+    #             return occupied_colors[0] # Cell is captured by player
+
+    #     return 0
+
+    def _is_isolated_corner(self, r: int, c: int) -> int:
+        """
+        Detect isolated corner cells: edge positions with no escape routes.
+        
+        Corner and edge cells that are completely surrounded by occupied positions
+        have no strategic value, as they cannot form new connections or provide
+        offensive/defensive value.
+        
+        Complexity: O(1) - evaluates max 5 neighbors per hexagonal cell
+        
+        Args:
+            r:      Row coordinate of cell to evaluate.
+            c:      Column coordinate of cell to evaluate.
+            
+        Returns:
+            1 or 2 if cell is isolated corner/edge.
+            0 if cell has at least one escape route or strategic position.
+        """
+        neighbors_list = self.neighbors(r, c)
+
+        if len(neighbors_list) == 6:
+            return 0 # Not a corner/edge
+        
+        if len(neighbors_list) == 2:
+            return self.opponent # Corner with only 2 neighbors is always isolated
+        
+        neighbors_distribution = {0: 0, 1: 0, 2: 0}
+
+        # Count neighbors
+        for nr, nc in neighbors_list:
+            neighbors_distribution[self.board[nr][nc]] += 1
+
+        player_controlled_neighbors = neighbors_distribution[1]
+        opponent_controlled_neighbors = neighbors_distribution[2]
+
+        dominant_player = 1 if player_controlled_neighbors > opponent_controlled_neighbors else 2
+
+        # Check if all neighbors are occupied (no escape routes)
+        if opponent_controlled_neighbors == len(neighbors_list) or player_controlled_neighbors == len(neighbors_list):
+            return dominant_player  # Cell has no strategic value, completely surrounded by one player's pieces
+
+        if len(neighbors_list) == 3 and (opponent_controlled_neighbors >= 2 or player_controlled_neighbors >= 2):
+            return dominant_player # Edge/corner cell with 3 neighbors and 2+ controlled by one player is effectively isolated
+
+        return 0

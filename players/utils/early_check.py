@@ -73,20 +73,17 @@ def suggest_opening_move(board: BoardOptimized, player_id: int) -> Optional[Tupl
     # If center is empty, play it
     if board.board[center_r][center_c] == 0:
         return (center_r, center_c)
-
-    # If only 1 piece on board and center is occupied, play strategic neighbor
-    total_pieces = board.total_pieces()
-
-    if total_pieces == 1:
-        # Get neighbors of center
+    # If player has not played many moves, play strategic center neighbour
+    elif board.count_pieces(player_id) <= 3:
         neighbors = list(board.neighbors(center_r, center_c))
         empty_neighbors = [
             (r, c) for r, c in neighbors if board.board[r][c] == 0
         ]
 
-        if not empty_neighbors:
+        if not empty_neighbors or len(empty_neighbors) < 6:  
+            # If center is occupied and not surrounded by empty cells, skip
             return None
-
+        
         # Choose neighbor closest to objective edge
         if player_id == 1:
             # Player 1 wants to be close to right edge (col = size - 1)

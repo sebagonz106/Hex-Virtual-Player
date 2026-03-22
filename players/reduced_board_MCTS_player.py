@@ -1,0 +1,604 @@
+"""RAVE MCTS player for Hex game."""
+
+from __future__ import annotations
+import time
+import random
+import math
+from typing import Optional, Tuple
+from heapq import heappush, heappop
+
+from board import HexBoard
+from players.player import Player
+from players.utils.board_optimized_with_fillin import BoardOptimizedWithFillin
+from players.utils.early_check import (
+    get_immediate_winning_move,
+    get_opponent_forcing_move,
+    suggest_opening_move,
+)
+
+
+class _ReducedBoardMCTSNode:
+    """Node in the MCTS tree with RAVE/AMAF statistics."""
+
+    def __init__(
+        self,
+        board: BoardOptimizedWithFillin,
+        player_id: int,
+        parent: Optional[_ReducedBoardMCTSNode] = None,
+        depth: int = 0,
+    ):
+        """
+        Initialize MCTS node with RAVE statistics.
+        
+        Args:
+            board: Optimized board state.
+            player_id: ID of player to move (1 or 2).
+            parent: Parent node.
+            depth: Depth of this node in the tree.
+        """
+        self.board = board
+        self.player_id = player_id
+        self.parent: Optional[_ReducedBoardMCTSNode] = parent
+        self.depth = depth
+        self.children = {}
+        
+        # UCT statistics
+        self.visit_count = 0
+        self.win_count = 0
+        
+        # RAVE/AMAF statistics (All-Moves-As-First)
+        # Maps move -> (visit_count, win_count)
+        self.amaf_visits = {}  # {move: count}
+        self.amaf_wins = {}    # {move: count}
+        
+        # Reverse mapping for O(1) lookup: child node -> move
+        # Used in select_best_child_with_rave to avoid O(n) loop
+        self.reverse_children = {}  # {id(child): move}
+        
+        # Candidate moves for expansion
+        self.untried_moves = list(board.get_empty_positions())
+        random.shuffle(self.untried_moves)
+
+
+    def uct_value(self, exploration_c: float) -> float:
+        """
+        Calculate UCT value for this node.
+        
+        UCT = Q(v)/N(v) + C * sqrt(ln(N(parent))/N(v))
+        
+        Args:
+            exploration_c: Exploration constant.
+            
+        Returns:
+            UCT score.
+        """
+        if self.visit_count == 0:
+            return float('inf')
+
+        exploitation = 1 - self.win_count / self.visit_count
+        exploration = exploration_c * math.sqrt(
+            math.log(self.parent.visit_count) / self.visit_count
+        ) if self.parent else 0
+        return exploitation + exploration
+
+    def select_best_child_with_rave(self, exploration_c: float, rave_bias: float = 0.00025) -> Optional[_ReducedBoardMCTSNode]:
+        """
+        Select child using UCT+RAVE combined value.
+        
+        Implements the formula from Cazenave & Saffidine (2009) Monte-Carlo Hex:
+        V_combined = (1 - coef) * UCT_value + coef * AMAF_value
+        
+        Where:
+        coef = rc / (rc + c + rc * c * bias)
+        
+        And:
+        - rc: amaf_visits (number of simulations where move was played)
+        - rw: amaf_wins (number of wins with this move)
+        - c: visit_count (simulations at this node)
+        - bias: 0.00025 (empirically optimal from Table 4, Cazenave 2009)
+        
+        Args:
+            exploration_c: Exploration constant for UCT.
+            rave_bias: Bias for decay function (default 0.00025).
+            
+        Returns:
+            Best child by RAVE-combined value, or None if no children.
+        """
+        if not self.children:
+            return None
+        
+        def combined_value(child):
+            # UCT value (traditional component)
+            uct_val = child.uct_value(exploration_c)
+            
+            # Get move leading to this child using reverse mapping (O(1))
+            move_to_child = self.reverse_children.get(id(child))
+            
+            if move_to_child is None or move_to_child not in self.amaf_visits:
+                # No AMAF data yet, return pure UCT
+                return uct_val
+            
+            # Calculate AMAF win rate
+            amaf_visits_count = self.amaf_visits[move_to_child]
+            if amaf_visits_count == 0:
+                return uct_val
+            
+            amaf_win_rate = 1 - self.amaf_wins[move_to_child] / amaf_visits_count
+            
+            # coef = rc / (rc + c + rc ∗ c ∗ bias) decays with visit count
+            rc = amaf_visits_count
+            c = self.visit_count
+            coef = rc / (rc + c + rc * c * rave_bias)
+            
+            # Combine UCT and RAVE
+            combined_val = (1.0 - coef) * uct_val + coef * amaf_win_rate
+            
+            return combined_val
+
+        return max(self.children.values(), key=combined_value)
+
+    def expand(self, move: Tuple[int, int], player_id: int) -> _ReducedBoardMCTSNode:
+        """
+        Expand a new child node.
+        
+        Args:
+            move: Move coordinates (row, col).
+            player_id: Player ID for new state.
+            
+        Returns:
+            New child node.
+        """
+        new_board = self.board.clone()
+        new_board.place_piece(move[0], move[1], self.player_id)
+        child = _ReducedBoardMCTSNode(new_board, player_id, parent=self, depth=self.depth + 1)
+        self.children[move] = child
+        self.reverse_children[id(child)] = move  # O(1) reverse lookup
+        return child
+
+    def is_terminal(self) -> bool:
+        """Check if this is a terminal state."""
+        return (
+            self.board.is_full()
+            or self.board.check_connection(1)
+            or self.board.check_connection(2)
+        )
+
+    def get_winner(self) -> Optional[int]:
+        """Get winner if terminal, None otherwise."""
+        if self.board.check_connection(1):
+            return 1
+        if self.board.check_connection(2):
+            return 2
+        return None
+
+
+class ReducedBoardMCTSPlayer(Player):
+    """
+    Monte Carlo Tree Search player for Hex with RAVE/AMAF and tree recycling.
+    
+    Implements MCTS with:
+    
+    - Tree Recycling: Between moves, detects opponent's move via board
+       comparison and reuses the search tree, improving efficiency.
+    
+    - RAVE Enhancement: All-Moves-As-First statistics track value estimates
+      for moves regardless of their position in the tree. Combines UCT and
+      RAVE for faster convergence during early iterations.
+
+    """
+
+    MAX_DEPTH = 50  # Limit depth to prevent infinite loops in large boards
+    ALPHA = 0.7  # visit count importance factor for final move selection
+    HEURISTICS_SELECTION = 0.9  # Probability of using heuristics for move selection in late game
+
+    def __init__(self, player_id: int, max_time: float = 4.98, exploration_c: float = 0.5, rave_bias: float = 0.00025):
+        """
+        Initialize RAVE-MCTS player with tree recycling capabilities.
+        
+        Args:
+            player_id: Player ID (1 or 2).
+            max_time: Maximum time per move in seconds (default 4.98).
+            exploration_c: UCT exploration constant (default 0.5).
+                           Controls exploration vs exploitation balance.
+                           Higher -> more exploration, lower -> more exploitation.
+            rave_bias: Bias for RAVE decay function (default 0.00025).
+                       Higher values -> faster transition to UCT only.
+                       Lower values -> longer phase of UCT+RAVE combination.
+        """
+        super().__init__(player_id)
+        self.max_time = max_time
+        self.exploration_c = exploration_c
+        self.rave_bias = rave_bias
+        
+        # Tree recycling state
+        self.board: Optional[BoardOptimizedWithFillin] = None
+        self.root: Optional[_ReducedBoardMCTSNode] = None
+        self.tree_reused_count = 0  # Statistics: tracks successful tree reuses
+
+    def play(self, board: HexBoard) -> Tuple[int, int]:
+        """
+        Select best move using MCTS with tree recycling, time control and board fillin.
+        
+        Attempts to reuse the search tree from the previous turn by detecting
+        the opponent's move and continuing from the appropriate subtree.
+        
+        Args:
+            board: Current HexBoard state.
+            
+        Returns:
+            Best move (row, col).
+        """
+        time_start = time.time()
+
+        # Convert to optimized board immediately for all subsequent operations
+        new_board = BoardOptimizedWithFillin(board)
+
+        best_move = random.choice(list(new_board.get_empty_positions()))  # Fallback random move
+
+        # Early check: opening move suggestion
+        opening_move = suggest_opening_move(new_board, self.player_id)
+        if opening_move and new_board.board[opening_move[0]][opening_move[1]] == 0:
+            self._reset_info()
+            return opening_move
+
+        # Attempt tree recycling
+        root = self._find_reusable_root(new_board)
+        if root is None:
+            # No recycling possible, create fresh root
+            root = _ReducedBoardMCTSNode(new_board, self.player_id)
+
+        # Early check: immediate winning move
+        win_move = get_immediate_winning_move(new_board, self.player_id)
+        if win_move:
+            self._reset_info()
+            return win_move
+
+        # Early check: must block opponent
+        opponent_id = 3 - self.player_id
+        block_move = get_opponent_forcing_move(new_board, opponent_id)
+        if block_move:
+            self._save_state_for_recycling(new_board, root, block_move)
+            return block_move
+
+        # MCTS search using optimized board
+        while time.time() - time_start < self.max_time:
+            self._mcts_iteration(root)
+
+        # Select best move
+        best_move = self._select_best_move(root)
+
+        # Save state for next turn's recycling
+        self._save_state_for_recycling(new_board, root, best_move)
+
+        elapsed = time.time() - time_start
+        print(f"[Player {self.player_id}] Reduced MCTS move in {elapsed:.4f}s | exploration_c={self.exploration_c} | rave_bias = {self.rave_bias} | tree_reused={self.tree_reused_count} times")
+        
+        return best_move
+
+    def _mcts_iteration(self, root: _ReducedBoardMCTSNode) -> None:
+        """
+        Execute one MCTS iteration with RAVE/AMAF support.
+        
+        Phases:
+        1. Selection: descend using UCT+RAVE
+        2. Expansion: add a new node with untried move
+        3. Simulation: random playout with AMAF tracking
+        4. Backpropagation: update UCT path and AMAF statistics
+        
+        Args:
+            root: Root node of MCTS tree.
+        """
+        # Selection + Expansion
+        node = root
+
+        while not node.is_terminal() and node.depth < self.MAX_DEPTH:
+            if node.untried_moves:
+                # Expansion: try a random untried move
+                move = node.untried_moves.pop()
+                next_player_id = 3 - node.player_id
+                node = node.expand(move, next_player_id)
+                break
+            else:
+                # Selection: use UCT+RAVE to select best child
+                child = node.select_best_child_with_rave(self.exploration_c, self.rave_bias)
+                if child is None:
+                    break
+                node = child
+
+        u = random.uniform(0, 1)
+
+        # Simulation: random playout from node WITH AMAF tracking
+        if node.is_terminal():
+            result = node.get_winner()
+            amaf_sequence = []
+        elif len(node.board.get_empty_positions()) < node.board.size * math.sqrt(node.board.size) and u < self.HEURISTICS_SELECTION:
+            # If we're in the endgame phase (few empty positions), use heuristics to guide playout
+            result, amaf_sequence = self._play_endgame_playout_with_heuristics(node)
+        else:
+            result, amaf_sequence = self._play_random_playout_with_amaf(node)
+
+        # Backpropagation: update UCT path AND AMAF statistics
+        current = node
+        while current is not None:
+            # Traditional UCT update
+            current.visit_count += 1
+            if result == current.player_id:
+                current.win_count += 1
+            
+            # All moves in playout get updated
+            if current.parent is not None and amaf_sequence:
+                for move in amaf_sequence:
+                    if move not in current.amaf_visits:
+                        current.amaf_visits[move] = 0
+                        current.amaf_wins[move] = 0
+                    
+                    current.amaf_visits[move] += 1
+                    if result == current.player_id:
+                        current.amaf_wins[move] += 1
+            
+            current = current.parent
+            
+    def _play_random_playout_with_amaf(self, node: _ReducedBoardMCTSNode) -> Tuple[int, list]:
+        """
+        Play a random playout from node, tracking All-Moves-As-First (AMAF).
+        
+        This function differs from _play_random_playout in that it returns
+        both the winner AND the sequence of moves played. This sequence is used
+        to update AMAF statistics at each node in the tree.
+        
+        Scientific basis: Gelly & Silver (2011) "Monte-Carlo Tree Search in Hex"
+        - AMAF (All-Moves-As-First) provides rapid action value estimation
+        - Each move in the playout is tracked, regardless of where it was played
+        - Improves convergence speed by providing early value estimates
+        
+        Args:
+            node: Starting node for playout.
+            
+        Returns:
+            Tuple of (winner, moves_sequence) where:
+            - winner: Player ID (1 or 2)
+            - moves_sequence: List of moves [(r1,c1), (r2,c2), ...] as tuples
+        """
+        board = node.board.clone()
+        current_player = node.player_id
+        moves_played = []
+
+        # Play until board is full or someone wins
+        empty_positions = list(board.get_empty_positions())
+        random.shuffle(empty_positions)
+
+        for r, c in empty_positions:
+            move = (r, c)
+            board.place_piece(r, c, current_player)
+            moves_played.append(move)  # TRACKING: record move for AMAF
+
+            if board.check_connection(current_player):
+                return current_player, moves_played
+
+            current_player = 3 - current_player
+
+        # Board is full with no winner (shouldn't happen in Hex)
+        return 3 - current_player, moves_played
+    
+    
+    def _play_endgame_playout_with_heuristics(self, node: _ReducedBoardMCTSNode) -> Tuple[int, list]:
+        """
+        Play a guided playout from node using endgame heuristics with playable cell filtering.
+        
+        Strategy (fallthrough order):
+        1. Winning move
+        2. Opponent threat block
+        3. Connection priority
+        4. Random move (fallback)
+        
+        This produces stronger playouts in endgame while maintaining MCTS purity
+        and using playable cell filtering to exclude inferior moves
+        
+        Args:
+            node: Starting node for playout.
+            
+        Returns:
+            Tuple of (winner, moves_sequence)
+        """
+        board = node.board.clone()
+        current_player = node.player_id
+        moves_played = []
+        heaps: dict = {current_player: [], 3 - current_player: []}  # Separate heaps for each player
+
+        # Initialize heaps
+        available_moves = board.get_empty_positions()
+        for move in available_moves:
+            info = board.move_priority_info(current_player, move)
+            # Heuristic: connection priority with max heap
+            heappush(heaps[current_player], (-self._evaluate_own_move_priority(info), move))  # Prioritize own connections and block opponent's
+            heappush(heaps[3 - current_player], (-self._evaluate_opponent_move_priority(info), move))
+        
+        while not board.is_full():
+            # ← Heuristic 1: WINNING MOVE (O(1), immediate victory)
+            winning_move = get_immediate_winning_move(board, current_player)
+            if winning_move:
+                board.place_piece(winning_move[0], winning_move[1], current_player)
+                moves_played.append(winning_move)
+                return current_player, moves_played
+            
+            # ← Heuristic 2: OPPONENT THREAT (O(1), must block)
+            threat_move = get_opponent_forcing_move(board, current_player)
+            if threat_move:
+                board.place_piece(threat_move[0], threat_move[1], current_player)
+                moves_played.append(threat_move)
+                current_player = 3 - current_player
+                continue
+            
+            # ← Heuristic 3: CONNECTION PRIORITY (O(1) per move, guides toward winning)
+            available_moves = set(board.get_empty_positions())
+            best_move = random.choice(list(available_moves))  # Default fallback if heaps are empty
+
+            while heaps[current_player]:
+                _, move = heappop(heaps[current_player])
+                if move in available_moves: # Checks for validity
+                    best_move = move
+                    break
+            
+            board.place_piece(best_move[0], best_move[1], current_player)
+            moves_played.append(best_move)
+            
+            # Check for win after placing
+            if board.check_connection(current_player):
+                return current_player, moves_played
+            
+            for nr, nc in board.neighbors(best_move[0], best_move[1]):
+                if board.board[nr][nc] == 0:
+                    # Update lazy heap
+                    info = board.move_priority_info(current_player, (nr, nc))
+                    heappush(heaps[current_player], (-self._evaluate_own_move_priority(info), (nr, nc)))
+                    heappush(heaps[3 - current_player], (-self._evaluate_opponent_move_priority(info), (nr, nc)))
+            
+            current_player = 3 - current_player
+        
+        # Board is full with no winner
+        return 0, moves_played
+
+    def _evaluate_own_move_priority(self, info: Tuple[int, int, int, int]) -> int:
+        return 5 * info[0] + 10 * info[1] + 15 * info[2] + 20 * info[3]
+    
+    def _evaluate_opponent_move_priority(self, info: Tuple[int, int, int, int]) -> int:
+        return 10 * info[0] + 5 * info[1] + 20 * info[2] + 15 * info[3]
+
+    def _find_board_difference(self, board1: BoardOptimizedWithFillin, board2: BoardOptimizedWithFillin) -> Optional[Tuple[int, int]]:
+        """
+        Find the single move that differs between two boards.
+        
+        Detects what move was made by comparing board states. If there is exactly
+        one difference (empty → piece), returns that move. Otherwise returns None
+        to indicate the boards are incomparable.
+        
+        Args:
+            board1: Previous board state.
+            board2: Current board state.
+            
+        Returns:
+            The move (row, col) that differs, or None if incomparable.
+        """
+        if board1.size != board2.size:
+            return None
+        
+        differences = []
+        for r in range(board1.size):
+            for c in range(board1.size):
+                if board1.board[r][c] != board2.board[r][c]:
+                    # Valid change: empty → piece
+                    if board1.board[r][c] == 0 and board2.board[r][c] != 0:
+                        differences.append((r, c))
+                    else:
+                        # Invalid change (overwrite, undo, etc)
+                        return None
+        
+        # Accept only exactly 1 move
+        if len(differences) == 1:
+            return differences[0]
+        else:
+            return None
+
+    def _find_reusable_root(self, current_board: BoardOptimizedWithFillin) -> Optional[_ReducedBoardMCTSNode]:
+        """
+        Attempt to find a reusable root node from the previous search tree.
+        
+        Algorithm:
+        1. If no previous state, return None (no recycling)
+        2. Detect opponent's move by comparing boards
+        3. If move found and exists in children, return that child
+        4. Otherwise return None (reset required)
+        
+        Args:
+            current_board: Current board state after opponent's move.
+            
+        Returns:
+            Reusable root node, or None if recycling not possible.
+        """
+        # Check if we have previous state to recycle from
+        if self.board is None or self.root is None:
+            return None
+        
+        # Find opponent's move by comparing boards
+        opp_move = self._find_board_difference(self.board, current_board)
+        
+        if opp_move is None:
+            # Board states are incomparable (multiple changes, invalid moves, etc)
+            return None
+        
+        # Search for this move in the children of last root
+        if opp_move in self.root.children:
+            reused_node = self.root.children[opp_move]
+            self.tree_reused_count += 1
+            print(f"[Player {self.player_id}] Tree recycled from move {opp_move} with {reused_node.visit_count} visits")
+            reused_node.parent = None  # Detach from old parent to avoid memory issues  
+            return reused_node
+        else:
+            # Move not found in tree (shouldn't happen, but fallback to reset)
+            return None
+
+    def _save_state_for_recycling(self, board: BoardOptimizedWithFillin, root: _ReducedBoardMCTSNode, best_move: Tuple[int, int]) -> None:
+        """
+        Save the current state for potential recycling in the next turn.
+        
+        Updates the board with the best move and saves both board and root.
+        Next turn will attempt to detect opponent's move relative to this state.
+        
+        Args:
+            board: Current board state (before best_move).
+            root: Current root node after search.
+            best_move: The move selected to play.
+        """
+        # Clone and update board with our move
+        saved_board = board.clone()
+        saved_board.place_piece(best_move[0], best_move[1], self.player_id)
+
+        # Save for next turn
+        try:
+            self.board = saved_board
+            self.root = root.children[best_move]
+            if self.root:
+                if self.root.parent:
+                    self.root.parent = None
+        except:
+            self._reset_info()
+    
+    def _reset_info(self):
+        """Reset saved state info."""
+        self.board = None
+        self.root = None
+        self.tree_reused_count = 0
+        
+    def _select_best_move(self, root: _ReducedBoardMCTSNode) -> Tuple[int, int]:
+        """
+        Select best move from root by a heuristic approach that values both
+        visit count and win rate.
+        
+        Args:
+            root: Root node.
+            
+        Returns:
+            Best move (row, col).
+        """
+        if not root.children:
+            # Fallback: random move from available empty cells
+            empty = list(root.board.get_empty_positions())
+            return random.choice(empty) if empty else (0, 0)
+
+        total_sims = sum(child.visit_count for child in root.children.values())
+
+        best_child = max(root.children.values(), key=lambda child: (1 - self.ALPHA) * (1 - child.win_count / child.visit_count) + self.ALPHA * child.visit_count / total_sims)
+
+        # best_child = max(root.children.values(), key=lambda child: child.visit_count)
+        
+        # Safely calculate win rate (avoid division by zero)
+        win_rate = (1 - best_child.win_count / best_child.visit_count) if best_child.visit_count > 0 else 0.0
+        
+        print(f"[Player {self.player_id}] Best move has {best_child.visit_count} visits and win rate {win_rate:.2f} after {total_sims} simulations")
+
+        # Find move that led to this child
+        for move, child in root.children.items():
+            if child is best_child:
+                return move
+
+        return (0, 0)
