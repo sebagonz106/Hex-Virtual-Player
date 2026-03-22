@@ -142,6 +142,37 @@ class _ProgressiveMCTSNode:
             
             return combined_val
         
+        # Use empiric heuristics for better node selecction in advanced game simulations
+        if len(self.board.get_empty_positions()) < self.board.size * math.sqrt(self.board.size) / 2:
+            children = {}
+            children_norm = {}
+            max_val = -1
+            count = 0
+
+            for child in self.children.values():
+                move = self.reverse_children.get(id(child))
+                if move is None:
+                    continue
+                info = self.board.move_priority_info(self.player_id, move)
+                val = 5 * info[0] + 10 * info[1] + 15 * info[2] + 20 * info[3]
+                children[child] = val
+                if val > 0:
+                    count += 1
+                max_val = max(max_val, children[child])
+
+            if count > 0:
+
+                for child, val in children.items():
+                    children_norm[child] = val / (5 * max_val * count) # value normalization
+
+                max_pair = (None, -1)
+                for child in children.keys():
+                    children_norm[child] += combined_value(child) # combining with rave value
+                    if children_norm[child] > max_pair[1]:
+                        max_pair = (child, children_norm[child])
+
+                return max_pair[0]
+        
         return max(self.children.values(), key=combined_value)
 
     def expand(self, move: Tuple[int, int], player_id: int) -> _ProgressiveMCTSNode:
