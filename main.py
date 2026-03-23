@@ -11,6 +11,8 @@ from players.recycler_MCTS_player import RecyclerMCTSPlayer
 from players.RAVE_MCTS_player import RAVEMCTSPlayer
 from players.progressive_MCTS_player import ProgressiveMCTSPlayer
 from players.parallelized_MCTS_player import ParallelizedMCTSPlayer
+from players.reduced_board_MCTS_player import ReducedBoardMCTSPlayer
+from Sebastian_Gonzalez_Alfonso.solution import SmartPlayer
 from typing import Optional, Type
 
 
@@ -22,6 +24,8 @@ AVAILABLE_PLAYERS = {
     "mcts-rave": RAVEMCTSPlayer,
     "mcts-progressive": ProgressiveMCTSPlayer,
     "mcts-parallel": ParallelizedMCTSPlayer,
+    "mcts-reduced": ReducedBoardMCTSPlayer,
+    "solution": SmartPlayer
 }
 
 
@@ -210,7 +214,8 @@ def display_help() -> None:
     print("  python main.py 5 mcts-recycler mcts-rave 5  # mcts-recycler vs RAVE (Phase 3)")
     print("  python main.py 5 mcts-rave mcts-progressive 5  # RAVE vs Progressive (Phase 4)")
     print("  python main.py 3 mcts-rave random 10   # 3x3, RAVE vs random, 10 games")
-    print("  python main.py 5 mcts-rave mcts-parallel 5   # 3x3, RAVE vs parallel, 5 games")
+    print("  python main.py 5 mcts-rave mcts-parallel 5   # 5x5, RAVE vs parallel, 5 games")
+    print("  python main.py 5 solution mcts-reduced 5   # 5x5, RAVE vs Final, 5 games")
     print(f"{'='*60}\n")
 
 
