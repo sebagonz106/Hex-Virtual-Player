@@ -6,7 +6,7 @@
 \contentsline {subsection}{\numberline {1.2}Propiedades Matemáticas y Complejidad Computacional}{4}{subsection.1.2}%
 \contentsline {subsection}{\numberline {1.3}Geometría Hexagonal y Representación del Tablero}{4}{subsection.1.3}%
 \contentsline {section}{\numberline {2}Algoritmos de Búsqueda}{5}{section.2}%
-\contentsline {subsection}{\numberline {2.1}Minimax con Poda Alfa-Beta}{5}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.1}Minimax}{5}{subsection.2.1}%
 \contentsline {subsubsection}{\numberline {2.1.1}Desarrollo Histórico}{5}{subsubsection.2.1.1}%
 \contentsline {subsubsection}{\numberline {2.1.2}Principios Fundamentales}{5}{subsubsection.2.1.2}%
 \contentsline {subsubsection}{\numberline {2.1.3}Poda Alfa-Beta}{5}{subsubsection.2.1.3}%
@@ -14,5 +14,19 @@
 \contentsline {subsubsection}{\numberline {2.2.1}Contexto Histórico y Motivación}{6}{subsubsection.2.2.1}%
 \contentsline {subsubsection}{\numberline {2.2.2}Principios Fundamentales}{6}{subsubsection.2.2.2}%
 \contentsline {subsubsection}{\numberline {2.2.3}Fórmula UCT y Balance Exploración-Explotación}{6}{subsubsection.2.2.3}%
-\contentsline {section}{\numberline {3}Mejoras Algorítmicas Propuestas}{7}{section.3}%
-\contentsline {section}{\numberline {4}Conclusiones}{7}{section.4}%
+\contentsline {section}{\numberline {3}Implementación y Estrategias Experimentales}{7}{section.3}%
+\contentsline {subsection}{\numberline {3.1}BasicMCTSPlayer: MCTS Convencional}{7}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}RecyclerMCTSPlayer: MCTS con Reciclaje de Árbol}{8}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}RAVEMCTSPlayer: MCTS con Evaluación Rápida de Acciones}{8}{subsection.3.3}%
+\contentsline {subsection}{\numberline {3.4}ProgressiveMCTSPlayer: MCTS con Estrategias Progresivas Adaptativas}{9}{subsection.3.4}%
+\contentsline {subsection}{\numberline {3.5}ParallelizedMCTSPlayer: MCTS Paralelizado con Sincronización Ordenada}{9}{subsection.3.5}%
+\contentsline {subsection}{\numberline {3.6}ReducedBoardMCTSPlayer: MCTS con Tableros Reducidos mediante Fillin}{10}{subsection.3.6}%
+\contentsline {subsection}{\numberline {3.7}Noobex: Jugador Final}{10}{subsection.3.7}%
+\contentsline {section}{\numberline {4}Análisis del Jugador Final Noobex}{11}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Descripción de SmartPlayer}{11}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Ventajas}{12}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}Limitaciones}{12}{subsection.4.3}%
+\contentsline {subsection}{\numberline {4.4}Recomendación de Uso}{12}{subsection.4.4}%
+\contentsline {section}{\numberline {5}Resultados Experimentales}{12}{section.5}%
+\contentsline {section}{\numberline {6}Investigación Futura}{13}{section.6}%
+\contentsline {section}{\numberline {7}Conclusiones}{15}{section.7}%
