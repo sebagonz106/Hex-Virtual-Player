@@ -83,8 +83,8 @@ $$\text{UCT}(v) = \frac{Q(v)}{N(v)} + C \sqrt{\frac{\ln N(p(v))}{N(v)}}$$
 | BasicMCTSPlayer | MCTS convencional sin mejoras | Aumenta |
 | RecyclerMCTSPlayer | + Reciclaje de árbol entre movimientos | Aumenta |
 | RAVEMCTSPlayer | + Evaluación rápida de acciones (RAVE) | Aumenta (máximo) |
-| ProgressiveMCTSPlayer | + Parámetros adaptativos por fase | Sin mejora significativa |
-| ReducedBoardMCTSPlayer | + Análisis de celdas inferiores (fillin) | Disminuye |
+| ProgressiveMCTSPlayer | + Parámetros adaptativos por fase | Disminuye |
+| ReducedBoardMCTSPlayer | + Análisis de celdas inferiores (fillin) | Sin mejora significativa |
 | ParallelizedMCTSPlayer | + Paralelización con sincronización | Aumenta (teoría) |
 
 ### Algoritmo Final: SmartPlayer

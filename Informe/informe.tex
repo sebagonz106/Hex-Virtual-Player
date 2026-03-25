@@ -18,7 +18,7 @@
 \rhead{\thepage}
 \lhead{Jugador Virtual de Hex}
 
-\title{Noobex, Jugador Virtual de Hex: Implementación y Análisis Experimental de Monte Carlo Tree Search}
+\title{Jugador Virtual de Hex: Implementación y Análisis Experimental de Monte Carlo Tree Search}
 \author{Sebastian González Alfonso}
 \date{C312}
 
@@ -33,7 +33,7 @@ Asignatura: Inteligencia Artificial \\}
 
 \vspace{2cm}
 
-{\Huge Jugador Virtual de Hex: \\ Implementación de MCTS y MinMax con Heurísticas}
+{\Huge Jugador Virtual de Hex: Implementación y Análisis Experimental de Monte Carlo Tree Search}
 
 \vspace{1.5cm}
 
@@ -98,7 +98,7 @@ El tablero de Hex utiliza la geometría de teselación hexagonal regular. Cada c
 
 \subsubsection{Desarrollo Histórico}
 
-El algoritmo Minimax constituye uno de los pilares fundacionales de la inteligencia artificial en juegos, originándose en la teoría de juegos combinatorios. Su formulación moderna se debe a las contribuciones de Von Neumann, Turing y Shannon en los años 1950. La adicional de poda alfa-beta, desarrollada independientemente por varios investigadores a finales de los años 1960, representa un hito computacional al demostrar que podía reducirse significativamente el árbol de búsqueda explorado sin pérdida de optimalidad.
+El algoritmo Minimax constituye uno de los pilares fundacionales de la inteligencia artificial en juegos, originándose en la teoría de juegos combinatorios. Su formulación moderna se debe a las contribuciones de Von Neumann, Turing y Shannon en los años 1950. La adición de la poda alfa-beta, desarrollada independientemente por varios investigadores a finales de los años 1960, representa un hito computacional al demostrar que podía reducirse significativamente el árbol de búsqueda explorado sin pérdida de optimalidad.
 
 \subsubsection{Principios Fundamentales}
 
@@ -120,13 +120,16 @@ Monte Carlo Tree Search (MCTS) emerge a mediados de la década del 2000 como par
 
 MCTS opera mediante iteración repetida de cuatro fases bien definidas, como se describe en desarrollos posteriores en el dominio de Hex \cite{Arneson2010}:
 
-La fase de \textbf{selección} comienza en la raíz del árbol y desciende mediante la aplicación de una política de selección (típicamente la fórmula UCT) hasta alcanzar un nodo no completamente explorado. La fórmula UCT (Upper Confidence bound for Trees) balancea exploración mediante el término de confianza superior y explotación mediante estimaciones de valor acumuladas.
+\begin{itemize}
+\item \textbf{Selección}: Comienza en la raíz del árbol y desciende mediante la aplicación de una política definida (típicamente la fórmula UCT) hasta alcanzar un nodo no completamente explorado. La fórmula UCT (Upper Confidence bound for Trees) balancea exploración mediante el término de confianza superior y explotación mediante estimaciones de valor acumuladas.
 
-En la fase de \textbf{expansión}, se agrega un nuevo nodo hijo al árbol, corresponde a un movimiento no previamente explorado desde la posición alcanzada en la fase anterior.
+\item \textbf{Expansión}: Agrega un nuevo nodo hijo al árbol correspondiente a un movimiento no previamente explorado desde la posición alcanzada en la fase anterior.
 
-Durante la fase de \textbf{simulación}, desde el nodo recientemente expandido se ejecuta una política de juego (comúnmente aleatorio puro en variantes básicas) hasta alcanzar una posición terminal del juego. El resultado de esta simulación (victoria, derrota o empate) se registra.
+\item \textbf{Simulación}: Ejecuta una política de juego (comúnmente aleatorio puro en variantes básicas) desde el nodo recientemente expandido hasta alcanzar una posición terminal del juego. El resultado de esta simulación (victoria o derrota) se registra.
 
-Finalmente, en la fase de \textbf{retropropagación} (backpropagation), el resultado de la simulación se propaga hacia atrás a través del camino desde el nodo expandido hasta la raíz, actualizando estadísticas de visitas y recompensas acumuladas en cada nodo del camino.
+\item \textbf{Retropropagación} (backpropagation): Propaga el resultado de la simulación hacia atrás a través del camino desde el nodo expandido hasta la raíz, actualizando estadísticas de visitas y recompensas acumuladas en cada nodo del camino.
+
+\end{itemize}
 
 \subsubsection{Fórmula UCT y Balance Exploración-Explotación}
 
@@ -136,7 +139,7 @@ La selección de nodos hijos se realiza tradicionalmente mediante la fórmula UC
 \text{UCT}(v) = \frac{Q(v)}{N(v)} + C \sqrt{\frac{\ln N(p(v))}{N(v)}}
 \end{equation}
 
-donde $Q(v)$ denota el número acumulado de simulaciones ganadoras desde el nodo $v$, $N(v)$ es el número total de visitas al nodo, $N(p(v))$ es el número de visitas al nodo padre, y $C$ es una constante de exploración ajustable. El primer término propicia explotación de nodos con alto rendimiento histórico, mientras el segundo término proporciona un bonus de exploración decreciente conforme un nodo es visitado más frecuentemente (permitiendo así revisar jugadas poco explotadas).
+donde $Q(v)$ denota el número acumulado de simulaciones ganadoras desde el nodo $v$, $N(v)$ es el número total de visitas al nodo, $N(p(v))$ es el número de visitas al nodo padre, y $C$ es una constante de exploración ajustable. El primer término favorece la explotación de nodos con alto rendimiento histórico, mientras el segundo término proporciona un bonus de exploración decreciente conforme un nodo es visitado más frecuentemente (permitiendo así revisar jugadas poco explotadas).
 
 \section{Implementación y Estrategias Experimentales}
 
@@ -156,7 +159,7 @@ Ofrece simplicidad conceptual, bajo overhead computacional y comportamiento pred
 
 \subsection{RecyclerMCTSPlayer: MCTS con Reciclaje de Árbol}
 
-Esta variante mejora el rendimiento temporal mediante la reutilización del árbol de búsqueda entre movimientos sucesivos (i. e. logra incorporar al análisis más simulaciones al reciclar las pertinentes de la exploración anterior). Después de que el contrincante realiza su movimiento, se detecta qué acción fue ejecutada comparando las dos configuraciones del tablero. Si esa acción existe como hijo del nodo raíz previamente explorado, la búsqueda continúa desde ese subtree, preservando todas las estadísticas acumuladas.
+Esta variante mejora el rendimiento temporal mediante la reutilización del árbol de búsqueda entre movimientos sucesivos (\textit{i. e.} logra incorporar al análisis más simulaciones al reciclar las pertinentes de la exploración anterior). Después de que el contrincante realiza su movimiento, se detecta qué acción fue ejecutada comparando las dos configuraciones del tablero. Si esa acción existe como hijo del nodo raíz previamente explorado, la búsqueda continúa desde ese subtree, preservando todas las estadísticas acumuladas.
 
 Aprovecha el trabajo computacional previo, reduce la latencia en movimientos posteriores y mantiene continuidad estratégica en la exploración; pero tiene algunas desventajas como complejidad adicional en la detección de movimientos opuestos, overhead de comparación de tableros y dependencia de que el árbol anterior sea reutilizable.
 
@@ -201,13 +204,13 @@ Después de una experimentación exhaustiva, se seleccionó RAVEMCTSPlayer como 
 
 \subsection{Descripción de SmartPlayer}
 
-SmartPlayer implementa Monte Carlo Tree Search paralelizado con mejoras RAVE y reciclaje de árbol entre movimientos. La arquitectura comprende cuatro worker threads que ejecutan iteraciones MCTS concurrentes sobre un árbol compartido sincronizado mediante locks. En cada iteración, se navega el árbol udsnndo la fórmula UCT+RAVE combinada (influenciada con heurística de detección de puentes en endgame), se expande un nodo no explorado, se ejecuta un playout aleatorio (guiado por heurísticas en endgame) hasta conclusión del juego, y se retropropaga el resultado actualizando estadísticas en todos los nodos del camino.
+SmartPlayer implementa Monte Carlo Tree Search paralelizado con mejoras RAVE y reciclaje de árbol entre movimientos. La arquitectura comprende cuatro worker threads que ejecutan iteraciones MCTS concurrentes sobre un árbol compartido sincronizado mediante locks. En cada iteración, se navega el árbol usando la fórmula UCT+RAVE combinada (influenciada con heurística de detección de puentes en endgame), se expande un nodo no explorado, se ejecuta un playout aleatorio (guiado por heurísticas en endgame) hasta conclusión del juego, y se retropropaga el resultado actualizando estadísticas en todos los nodos del camino.
 
 El playout está optimizado mediante cálculo rápido de posiciones vacías utilizando Union-Find (\textit{disjoint sets union}), estructura que acelera operaciones de verificación de ganancia y mantenimiento de conectividad mediante operaciones de unión eficientes. Para utilizarla, se diseñó un tablero auxiliar (\textit{BoardOptimized}) que optimiza la ejecución del algoritmo al ofrecerle información de forma rápida y organizada.
 
 La selección de las jugadas es realizada de la misma forma que en el resto de las estrategias implementadas: $ max_{node} \{ (1 - \texttt{ALPHA)} * \texttt{win\_rate} + \texttt{ALPHA} * \texttt{visit\_rate}\}$, con \texttt{visit\_rate} definido como la razón entre la cantidad de visitas al nodo durante la exploración y la cantidad de simulaciones realizadas (iteraciones del algoritmo).
 
-El endgame necesario para la activacion de las heurísticas es activado a través de la cantidad de nodos en el tablero, con un umbral definido en $n * \sqrt{n}$ posiciones ocupadas. Fuera de esto, usa conocimiento de juego para detectar jugadas obvias como posiciones ganadoras tanto para el jugador como para el oponente (con el objetivo de bloquearla) y sugerencia de jugadas iniciales, cuando la selección es práctiamente aleatoria.
+El endgame necesario para la activación de las heurísticas es activado a través de la cantidad de nodos en el tablero, con un umbral definido en $n * \sqrt{n}$ posiciones ocupadas. Fuera de esto, usa conocimiento de juego para detectar jugadas obvias como posiciones ganadoras tanto para el jugador como para el oponente (con el objetivo de bloquearla) y sugerencia de jugadas iniciales, cuando la selección es práctiamente aleatoria.
 
 \subsection{Ventajas}
 
@@ -215,7 +218,7 @@ La paralelización permite teóricamente aprovechar múltiples núcleos de proce
 
 \subsection{Limitaciones}
 
-En el intérprete de referencia de Python (CPython), el Global Interpreter Lock (GIL) serializa la ejecución de código bytecode, eliminando los beneficios teóricos de paralelización. Esto hace que tenga un redimiento similar y ligeramente inferior (debido a la complejidad añadida) al RAVEMCTSPlayer.
+En el intérprete de referencia de Python (CPython), el Global Interpreter Lock (GIL) serializa la ejecución de código bytecode, eliminando los beneficios teóricos de paralelización. Esto hace que tenga un rendimiento similar y ligeramente inferior (debido a la complejidad añadida) al RAVEMCTSPlayer.
 
 \subsection{Recomendación de Uso}
 
@@ -254,7 +257,7 @@ Aunque este proyecto proporciona un framework experimental sólido para desarrol
 
 \section{Conclusiones}
 
-Este proyecto presenta un análisis sistemático comparativo de estrategias de búsqueda en el juego Hex bajo restricción temporal de 5 segundos por movimiento. Se construyó una jerarquía experimental que avanza desde Monte Carlo Tree Search básico hacia versiones aumentadas con RAVE, tree recycling, paralelización, estrategias progresivas, heurísticas y análisis de tableros reducidos. Los resultados experimentales demuestran que para el régimen de restricción temporal de este proyecto, el algoritmo MCTS con RAVE y tree recycling representa el óptimo viable. Quedan propuestas las posibles mejoras a explorar, pero se presneta a Noobex como jugador de Hex competente.
+Este proyecto presenta un análisis sistemático comparativo de estrategias de búsqueda en el juego Hex bajo restricción temporal de 5 segundos por movimiento. Se construyó una jerarquía experimental que avanza desde Monte Carlo Tree Search básico hacia versiones aumentadas con RAVE, tree recycling, paralelización, estrategias progresivas, heurísticas y análisis de tableros reducidos. Los resultados experimentales demuestran que para el régimen de restricción temporal de este proyecto, el algoritmo MCTS con RAVE y tree recycling representa el óptimo viable. Quedan propuestas las posibles mejoras a explorar, pero se presenta a Noobex como jugador de Hex competente.
 
 \begin{thebibliography}{99}
 
