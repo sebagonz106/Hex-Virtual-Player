@@ -587,11 +587,10 @@ class RAVEMCTSPlayer(Player):
         # Safely calculate win rate (avoid division by zero)
         win_rate = (1 - best_child.win_count / best_child.visit_count) if best_child.visit_count > 0 else 0.0
         
-        print(f"[Player {self.player_id}] Best move has {best_child.visit_count} visits and win rate {win_rate:.2f} after {total_sims} simulations")
-
         # Find move that led to this child
         for move, child in root.children.items():
             if child is best_child:
+                print(f"[Player {self.player_id}] Best move {move} has {best_child.visit_count} visits and win rate {win_rate:.2f} after {total_sims} simulations")
                 return move
 
         return (0, 0)

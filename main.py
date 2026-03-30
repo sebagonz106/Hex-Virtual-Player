@@ -154,40 +154,46 @@ def run_matches(
     player1_wins = 0
     player2_wins = 0
     
-    for match_num in range(1, num_matches + 1):
-        print(f"Match {match_num}/{num_matches}:")
-        print("-" * 60)
-        
-        # Alternate which player goes first
-        if match_num % 2 == 1:
-            p1_class = player1_class
-            p2_class = player2_class
-        else:
-            p1_class = player2_class
-            p2_class = player1_class
-        
-        winner = play_game(board_size, p1_class, p2_class, verbose=False)
-        
-        if winner == 1:
-            print(f"✅ Player 1 ({p1_class.__name__}) wins!")
-            if p1_class == player1_class:
-                player1_wins += 1
+    try:
+        for match_num in range(1, num_matches + 1):
+            print(f"Match {match_num}/{num_matches}:")
+            print("-" * 60)
+
+            # Alternate which player goes first
+            if match_num % 2 == 1:
+                p1_class = player1_class
+                p2_class = player2_class
             else:
-                player2_wins += 1
-        elif winner == 2:
-            print(f"✅ Player 2 ({p2_class.__name__}) wins!")
-            if p2_class == player2_class:
-                player2_wins += 1
+                p1_class = player2_class
+                p2_class = player1_class
+
+            winner = play_game(board_size, p1_class, p2_class, verbose=False)
+
+            if winner == 1:
+                print(f"✅ Player 1 ({p1_class.__name__}) wins!")
+                if p1_class == player1_class:
+                    player1_wins += 1
+                else:
+                    player2_wins += 1
+            elif winner == 2:
+                print(f"✅ Player 2 ({p2_class.__name__}) wins!")
+                if p2_class == player2_class:
+                    player2_wins += 1
+                else:
+                    player1_wins += 1
             else:
-                player1_wins += 1
-        else:
-            print(f"⚠️ Draw")
-        print()
-    
-    print(f"{'#'*60}")
-    print(f"Results: {player1_name}: {player1_wins}, {player2_name}: {player2_wins}")
-    print(f"Win rate: {player1_name}: {100*player1_wins/num_matches:.1f}%")
-    print(f"{'#'*60}\n")
+                print(f"⚠️ Draw")
+            print()
+
+    except KeyboardInterrupt:
+        num_matches = player1_wins + player2_wins
+        print("\nGame stopped after", num_matches, "games.\n")
+
+    finally:
+        print(f"{'#'*60}")
+        print(f"Results: {player1_name}: {player1_wins}, {player2_name}: {player2_wins}")
+        print(f"Win rate: {player1_name}: {100*player1_wins/num_matches:.1f}%")
+        print(f"{'#'*60}\n")
 
 
 def display_help() -> None:
