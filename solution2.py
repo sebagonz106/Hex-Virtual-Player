@@ -17,7 +17,7 @@ from heapq import heappush, heappop
 from concurrent.futures import ThreadPoolExecutor
 
 from board import HexBoard
-from player import Player
+from players.player import Player
 
 class _MCTSNode:
     """Node in the MCTS tree with thread-safe RAVE/AMAF statistics.
@@ -133,6 +133,7 @@ class _MCTSNode:
                 coef = rc / (rc + c + rc * c * rave_bias)
                 
                 return (1.0 - coef) * uct_val + coef * amaf_rate
+            
             empty = len(self.board.get_empty_positions())
             
             # Use empiric heuristics for better node selecction in advanced game simulations
@@ -245,7 +246,7 @@ class _MCTSNode:
 
 
 
-class SmartPlayer(Player):
+class SmartPlayer2(Player):
     """Parallel tree MCTS player for Hex with RAVE/AMAF and tree recycling.
     
     Implements MCTS with:
@@ -296,6 +297,7 @@ class SmartPlayer(Player):
         # Tree recycling state
         self.board: Optional[_BoardOptimized] = None
         self.root: Optional[_MCTSNode] = None
+        self.tree_reused_count = 0  # Statistics: tracks successful tree reuses
 
     def play(self, board: HexBoard) -> Tuple[int, int]:
         """
@@ -310,6 +312,8 @@ class SmartPlayer(Player):
         Returns:
             Best move (row, col).
         """
+        # print("========================== player", self.player_id, "==========================")
+        
         time_start = time.time()
 
         # Convert to optimized board immediately for all subsequent operations
@@ -322,18 +326,23 @@ class SmartPlayer(Player):
         if opening_move and new_board.board[opening_move[0]][opening_move[1]] == 0:
             self._reset_info()
             return opening_move
-
-        # Attempt tree recycling
-        root = self._find_reusable_root(new_board)
-        if root is None:
-            # No recycling possible, create fresh root
-            root = _MCTSNode(new_board, self.player_id)
-
+        
         # Early check: immediate winning move
         win_move = get_immediate_winning_move(new_board, self.player_id)
         if win_move:
             self._reset_info()
             return win_move
+
+        # Attempt tree recycling
+        root = self._find_reusable_root(new_board)
+        recycled = False
+        if root is None or not self.board:
+            # No recycling possible, create fresh root
+            root = _MCTSNode(new_board, self.player_id)
+            self.board = None
+        else:
+            new_board = self.board.clone()
+            recycled = True
 
         # Early check: must block opponent
         opponent_id = 3 - self.player_id
@@ -341,6 +350,26 @@ class SmartPlayer(Player):
         if block_move:
             self._save_state_for_recycling(new_board, root, block_move)
             return block_move
+
+        # Early check: bridge disruption
+        if recycled:
+            forced_moves = new_board.get_altered_bridges()
+            if len(forced_moves) > 0:
+                move = forced_moves[0]
+
+                # several moves affected, choose one using selection criteria
+                if len(forced_moves) > 1:
+                    nodes = []
+                    for move in forced_moves:
+                        try:
+                            nodes.append(root.children[move])
+                        except KeyError:
+                            continue
+
+                    if len(nodes) > 0:
+                        move = root.reverse_children[id(max(nodes, key=self._move_score))]
+                self._save_state_for_recycling(new_board, root, move)
+                return move
 
         # Parallel MCTS search on shared tree with multiple workers
         iteration_counts = self._parallel_search(root, time_start)
@@ -350,6 +379,17 @@ class SmartPlayer(Player):
 
         # Save state for next turn's recycling
         self._save_state_for_recycling(new_board, root, best_move)
+
+        best_child = root.children[best_move]
+        # print("tree recycled:", recycled)
+        # print("best move:", best_move)
+        # print("sims:", root.visit_count)
+        # print("selected visit_count:", best_child.visit_count)
+        # print("max visit_count:", max(child.visit_count for child in root.children.values()))
+        # print("selected win_rate:", 1 - best_child.win_count / best_child.visit_count)
+        # print("max win_rate:", max( 1 - child.win_count / child.visit_count for child in root.children.values()))
+        # print("elapsed:", time.time() - time_start)
+        # print("===============================================================")
         
         return best_move
 
@@ -618,6 +658,7 @@ class SmartPlayer(Player):
         # Search for this move in the children of last root
         if opp_move in self.root.children:
             reused_node = self.root.children[opp_move]
+            self.board.place_piece(opp_move[0], opp_move[1], 3 - self.player_id)
             reused_node.parent = None  # Detach from old parent to avoid memory issues  
             return reused_node
         else:
@@ -639,6 +680,7 @@ class SmartPlayer(Player):
         # Clone and update board with our move
         saved_board = board.clone()
         saved_board.place_piece(best_move[0], best_move[1], self.player_id)
+        saved_board.update_bridges(best_move)
 
         # Save for next turn
         try:
@@ -654,6 +696,7 @@ class SmartPlayer(Player):
         """Reset saved state info."""
         self.board = None
         self.root = None
+        self.tree_reused_count = 0
         
     def _select_best_move(self, root: _MCTSNode) -> Tuple[int, int]:
         """
@@ -673,23 +716,39 @@ class SmartPlayer(Player):
                 empty = list(root.board.get_empty_positions())
                 return random.choice(empty) if empty else (0, 0) # Fallback to random empty move
             
-            total_sims = sum(child.visit_count for child in root.children.values())
             
-            def move_score(child: _MCTSNode) -> float:
-                if child.visit_count < 1 or total_sims < 1:
-                    return 0.0
-                win_rate = 1.0 - child.win_count / child.visit_count
-                visit_ratio = child.visit_count / total_sims
-                return (1.0 - self.ALPHA) * win_rate + self.ALPHA * visit_ratio
             
-            try:
-                # Find move that led to this child
-                best_move = root.reverse_children[id(max(root.children.values(), key=move_score))]
-            except KeyError:
-                best_move = (0, 0)
-    
-        return best_move
+            best_move = root.reverse_children[id(max(root.children.values(), key=self._move_score))]
+        
+        # Find move that led to this child
+        try:
+            return best_move
+        except KeyError:
+            return (0, 0)
 
+    def _move_score(self, child: _MCTSNode) -> float:
+        """Calculate a move score from a node based on visit count and win rate for final move selection.
+
+        Args:
+            child (_MCTSNode): Node from which to calculate the move score.
+
+        Returns:
+            float: Move score based on visit count and win rate.
+        """
+        root = child.parent
+
+        if root is None:
+            return 0.0
+
+        total_sims = sum(child.visit_count for child in root.children.values())
+
+        if child.visit_count < 1 or total_sims < 1:
+            return 0.0
+        
+        win_rate = 1.0 - child.win_count / child.visit_count
+        visit_ratio = child.visit_count / total_sims
+        return (1.0 - self.ALPHA) * win_rate + self.ALPHA * visit_ratio
+    
 
 class _UnionSnapshot:
     """
@@ -709,6 +768,58 @@ class _UnionSnapshot:
         self.prev_parent = prev_parent
         self.prev_rank = prev_rank
 
+
+class _Bridge:
+    """Represents a bridge connection pattern in Hex.
+    
+    A bridge is a fundamental connection structure where two player pieces
+    are connected through two empty cells (connectors). If one connector is
+    blocked by opponent, the player must occupy the other to maintain potential
+    connection.
+    
+    In game theory, bridges are used to track forced moves and strategic
+    connections that guarantee at least one path remains open.
+    """
+    
+    def __init__(self, player_id: int, positions: set[Tuple[int, int]], connectors: set[Tuple[int, int]]) -> None:
+        """Initialize a bridge structure.
+        
+        Args:
+            player_id: Owner of the bridge (1 or 2).
+            positions: Set of two player pieces forming the bridge endpoints.
+            connectors: Set of two empty cells connecting the positions.
+                       If one is blocked, the other becomes a forced move.
+        """
+        self.player_id = player_id
+        self.positions = positions
+        self.connectors = connectors
+
+    def __eq__(self, value: object) -> bool:
+        """Check equality based on positions and connectors.
+        
+        Two bridges are equal if they have the same endpoints and connectors,
+        regardless of internal set ordering.
+        
+        Args:
+            value: Object to compare with.
+            
+        Returns:
+            True if bridges represent the same structure, False otherwise.
+        """
+        if not isinstance(value, _Bridge) or self.player_id != value.player_id:
+            return False
+        
+        # Verify all positions match
+        for pos in value.positions:
+            if pos not in self.positions:
+                return False
+        
+        # Verify all connectors match
+        for pos in value.connectors:
+            if pos not in self.connectors:
+                return False
+            
+        return True
 
 
 class _BoardOptimized:
@@ -733,6 +844,7 @@ class _BoardOptimized:
         self.board = [row[:] for row in hex_board.board]
         self._empty_positions: Set[Tuple[int, int]] = self._compute_empty_positions()
         self._neighbors_cache: dict = {}
+        self._bridges: List[_Bridge] = []
 
         # Union-Find structures (N² cells + 4 phantom nodes)
         total_nodes = self.size * self.size + 4
@@ -1045,6 +1157,7 @@ class _BoardOptimized:
                     
                     if len(candidates) > 0: 
                         x, y = candidates[0] # Just one possible candidate
+                        bridges_found.append((nr, nc))
                         if self.board[x][y] == player:
                             our_bridges += 1
                         else:
@@ -1052,6 +1165,109 @@ class _BoardOptimized:
 
         return opp_neighbors, our_neighbors, opp_bridges, our_bridges #connection heuristic data
     
+
+    def update_bridges(self, pos: Tuple[int, int]) -> None:
+        """Detect and register bridge patterns created by a placed piece.
+        
+        When a piece is placed, identifies all bridge structures involving the
+        new piece. A bridge connects the new piece to another friendly piece
+        through exactly two empty intermediate cells.
+        
+        Bridge structure:
+            Piece (new) -- empty cell -- empty cell -- Piece (existing)
+        
+        For each identified bridge, both connectors are tracked. If one is
+        later blocked by the opponent, occupying the other becomes a forced
+        move to maintain the connection guarantee.
+        
+        Complexity: O(K²) where K ~ 6 (hexagonal grid neighbors).
+        
+        Args:
+            pos: Position (row, col) where piece was just placed.
+        """
+        # Get player who placed the piece
+        player = self.board[pos[0]][pos[1]]
+        if player == 0:  # Invalid: empty cell (should not happen)
+            return
+        
+        # Find all empty neighbors of the placed piece
+        empty_neighbours = [(r, c) for r, c in self.neighbors(pos[0], pos[1]) 
+                           if self.board[r][c] == 0]
+
+        # Need at least 2 empty neighbors to form a bridge
+        if len(empty_neighbours) < 2:
+            return
+        
+        # Check each pair of empty neighbors for bridge pattern
+        for r, c in empty_neighbours:
+            # Get neighbors of this empty cell (excluding the piece we just placed)
+            current_neighbours = [(x, y) for x, y in self.neighbors(r, c) 
+                                 if not (x == pos[0] and y == pos[1])]
+
+            for nr, nc in current_neighbours:
+                # Other connector must also be an empty neighbor of placed piece
+                if (nr, nc) not in empty_neighbours:
+                    continue
+                    
+                # Find the other friendly piece this bridge connects to
+                candidates = [(x, y) for x, y in current_neighbours 
+                             if (x, y) in self.neighbors(nr, nc) 
+                             and self.board[x][y] == player]
+                
+                if candidates:
+                    # Create and register the bridge
+                    other_piece = candidates[0]
+                    bridge = _Bridge(player, set([pos, other_piece]), 
+                                   set([(r, c), (nr, nc)]))
+                    
+                    # Avoid registering duplicates
+                    if bridge not in self._bridges:
+                        self._bridges.append(bridge)
+    
+    def get_altered_bridges(self) -> list[Tuple[int, int]]:
+        """Identify forced moves derived from compromised or broken bridges.
+        
+        Scans all tracked bridges to detect when opponent has blocked one
+        connector. When exactly one connector remains free, that position
+        becomes a forced move to preserve the connection.
+        
+        Also performs cleanup by removing bridges with both connectors blocked.
+        
+        Strategy (per bridge):
+        - 2 connectors free -> viable, no forced move
+        - 1 connector free  -> forced move to occupy the remaining connector
+        - 0 connectors free -> broken, remove from tracking
+        
+        Complexity: O(B) where B is the number of tracked bridges.
+        
+        Returns:
+            List of forced move positions (row, col) defending critical bridges.
+            Empty list if no compromised bridges exist.
+        """
+        forced_moves = []
+        bridges_to_remove = []
+
+        # Check each tracked bridge for blockage
+        for bridge in self._bridges:
+            # Count free (empty) connectors for this bridge
+            free_connectors = [(r, c) for r, c in bridge.connectors 
+                              if self.board[r][c] == 0]
+            
+            if len(free_connectors) > 1:
+                # Bridge still viable: both paths remain open
+                continue
+            elif len(free_connectors) > 0:
+                # Bridge compromised: one path blocked, occupy the other
+                forced_moves.append(free_connectors[0])
+            else:
+                # Bridge destroyed: both paths blocked, mark for removal
+                bridges_to_remove.append(bridge)
+        
+        # Perform cleanup of broken bridges
+        for bridge in bridges_to_remove:
+            self._bridges.remove(bridge)
+        
+        return forced_moves
 
     def clone(self) -> "_BoardOptimized":
         """
@@ -1064,6 +1280,7 @@ class _BoardOptimized:
         new_board.board = [row[:] for row in self.board]
         new_board._empty_positions = self._empty_positions.copy()
         new_board._neighbors_cache = self._neighbors_cache
+        new_board._bridges = self._bridges.copy()
 
         # Union-Find state
         new_board.parent = self.parent.copy()

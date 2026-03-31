@@ -12,7 +12,9 @@ from players.RAVE_MCTS_player import RAVEMCTSPlayer
 from players.progressive_MCTS_player import ProgressiveMCTSPlayer
 from players.parallelized_MCTS_player import ParallelizedMCTSPlayer
 from players.reduced_board_MCTS_player import ReducedBoardMCTSPlayer
-from Sebastian_Gonzalez_Alfonso.solution import SmartPlayer
+from solution3 import SmartPlayer3
+from solution2 import SmartPlayer2
+from solution1 import SmartPlayer1
 from typing import Optional, Type
 
 
@@ -25,7 +27,9 @@ AVAILABLE_PLAYERS = {
     "mcts-progressive": ProgressiveMCTSPlayer,
     "mcts-parallel": ParallelizedMCTSPlayer,
     "mcts-reduced": ReducedBoardMCTSPlayer,
-    "solution": SmartPlayer
+    "solution3": SmartPlayer3,
+    "solution2": SmartPlayer2,
+    "solution1": SmartPlayer1
 }
 
 
@@ -191,9 +195,10 @@ def run_matches(
 
     finally:
         print(f"{'#'*60}")
-        print(f"Results: {player1_name}: {player1_wins}, {player2_name}: {player2_wins}")
-        print(f"Win rate: {player1_name}: {100*player1_wins/num_matches:.1f}%")
-        print(f"{'#'*60}\n")
+        if num_matches > 0:
+            print(f"Results: {player1_name}: {player1_wins}, {player2_name}: {player2_wins}")
+            print(f"Win rate: {player1_name}: {100*player1_wins/num_matches:.1f}%")
+            print(f"{'#'*60}\n")
 
 
 def display_help() -> None:

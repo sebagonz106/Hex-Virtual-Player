@@ -17,7 +17,7 @@ from heapq import heappush, heappop
 from concurrent.futures import ThreadPoolExecutor
 
 from board import HexBoard
-from player import Player
+from players.player import Player
 
 class _MCTSNode:
     """Node in the MCTS tree with thread-safe RAVE/AMAF statistics.
@@ -136,7 +136,7 @@ class _MCTSNode:
             empty = len(self.board.get_empty_positions())
             
             # Use empiric heuristics for better node selecction in advanced game simulations
-            if empty < self.board.size * math.sqrt(self.board.size):
+            if empty < self.board.size * math.sqrt(self.board.size) / 2:
                 children = {}
                 children_norm = {}
                 max_val = -1
@@ -245,7 +245,7 @@ class _MCTSNode:
 
 
 
-class SmartPlayer(Player):
+class SmartPlayer1(Player):
     """Parallel tree MCTS player for Hex with RAVE/AMAF and tree recycling.
     
     Implements MCTS with:
@@ -269,7 +269,7 @@ class SmartPlayer(Player):
 
     """
 
-    MAX_DEPTH = 50  # Limit depth to prevent infinite loops in large boards
+    MAX_DEPTH = 50
     ALPHA = 0.7  # visit count importance factor for final move selection
     NUM_WORKERS = 4
     HEURISTICS_SELECTION_RATE = 0.9  # Probability of using heuristics for move selection in late game
@@ -296,6 +296,7 @@ class SmartPlayer(Player):
         # Tree recycling state
         self.board: Optional[_BoardOptimized] = None
         self.root: Optional[_MCTSNode] = None
+        self.tree_reused_count = 0  # Statistics: tracks successful tree reuses
 
     def play(self, board: HexBoard) -> Tuple[int, int]:
         """
@@ -350,6 +351,13 @@ class SmartPlayer(Player):
 
         # Save state for next turn's recycling
         self._save_state_for_recycling(new_board, root, best_move)
+
+        elapsed = time.time() - time_start
+        total_iterations = sum(iteration_counts)
+        print(f"[Player {self.player_id}] Parallel MCTS ({self.NUM_WORKERS} workers) | "
+              f"iterations={total_iterations} (per worker: {iteration_counts}) in {elapsed:.4f}s | \n"
+              f"c={self.exploration_c:.2f} | bias={self.rave_bias} | "
+              f"recycled=x{self.tree_reused_count}")
         
         return best_move
 
@@ -618,6 +626,8 @@ class SmartPlayer(Player):
         # Search for this move in the children of last root
         if opp_move in self.root.children:
             reused_node = self.root.children[opp_move]
+            self.tree_reused_count += 1
+            print(f"[Player {self.player_id}] Tree recycled from move {opp_move} with {reused_node.visit_count} visits")
             reused_node.parent = None  # Detach from old parent to avoid memory issues  
             return reused_node
         else:
@@ -654,6 +664,7 @@ class SmartPlayer(Player):
         """Reset saved state info."""
         self.board = None
         self.root = None
+        self.tree_reused_count = 0
         
     def _select_best_move(self, root: _MCTSNode) -> Tuple[int, int]:
         """
@@ -682,13 +693,19 @@ class SmartPlayer(Player):
                 visit_ratio = child.visit_count / total_sims
                 return (1.0 - self.ALPHA) * win_rate + self.ALPHA * visit_ratio
             
-            try:
-                # Find move that led to this child
-                best_move = root.reverse_children[id(max(root.children.values(), key=move_score))]
-            except KeyError:
-                best_move = (0, 0)
-    
-        return best_move
+            best_child = max(root.children.values(), key=move_score)
+            
+            # Statistics for logging
+            win_rate = 1.0 - best_child.win_count / best_child.visit_count if best_child.visit_count > 0 else 0.0
+            
+        print(f"[Player {self.player_id}] Best move has {best_child.visit_count} visits and win rate {win_rate:.2f} after {total_sims} simulations")
+
+        # Find move that led to this child
+        try:
+            return root.reverse_children[id(best_child)]
+        except KeyError:
+            return (0, 0)
+
 
 
 class _UnionSnapshot:
@@ -1027,28 +1044,21 @@ class _BoardOptimized:
             else:
                 empty_neighbours.append((nr, nc))
 
-        bridges_found = []
-
         if len(empty_neighbours) > 1:
             for r, c in empty_neighbours:
-                if (r, c) in bridges_found: #avoid double count
-                    continue
-                
-                # Exclude original pos
-                current_neighbours = [(x, y) for x, y in self.neighbors(r, c) if not (x == pos[0] and y == pos[1])]
-
-                for nr, nc in current_neighbours:
-                    if not (nr, nc) in empty_neighbours:
+                current_neighbours = self.neighbors(r, c)
+                for nr, nc in empty_neighbours:
+                    if (nr == r and nc == c) or not (nr, nc) in current_neighbours:
                         continue
-                    # Get common neighbour other than pos
+                    # Get common neighbours
                     candidates = [(x,y) for (x,y) in current_neighbours if (x, y) in self.neighbors(nr, nc)]
                     
                     if len(candidates) > 0: 
                         x, y = candidates[0] # Just one possible candidate
                         if self.board[x][y] == player:
                             our_bridges += 1
-                        else:
-                            opp_bridges += 1 # Enemy bridge or possible bridge (if 0)
+                        elif self.board[x][y] == 3 - player:
+                            opp_bridges += 1
 
         return opp_neighbors, our_neighbors, opp_bridges, our_bridges #connection heuristic data
     
